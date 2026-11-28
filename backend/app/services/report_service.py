@@ -20,13 +20,13 @@ from app.models.auth import StaffProfile, User
 from app.models.college import Counter
 from app.models.engagement import Review, SupportTicket
 from app.models.inventory import InventoryItem, PurchaseOrder, StockBatch, StockMovement, WastageRecord
-from app.models.menu import FoodCategory, FoodItem, Ingredient
+from app.models.menu import FoodCategory, FoodItem, Ingredient, Recipe, RecipeIngredient
 from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.payment import Payment, PickupToken
 from app.models.staff import StaffAttendance, StaffTask
 
 PENDING_ACTIVE_STATUSES = ("PAYMENT_PENDING", "PAYMENT_CONFIRMED", "PLACED", "ACCEPTED", "PREPARING", "READY")
-VALID_PRESETS = {"today", "yesterday", "last_7_days", "last_30_days", "this_month", "custom"}
+VALID_PRESETS = {"today", "yesterday", "last_7_days", "last_30_days", "this_month", "previous_month", "custom"}
 
 
 def _to_local_dt(dt: datetime, tz) -> datetime:
@@ -56,6 +56,10 @@ def resolve_report_date_range(
         return local_today - timedelta(days=29), local_today, "last_30_days"
     if chosen_preset == "this_month":
         return local_today.replace(day=1), local_today, "this_month"
+    if chosen_preset == "previous_month":
+        first_this = local_today.replace(day=1)
+        prev_last = first_this - timedelta(days=1)
+        return prev_last.replace(day=1), prev_last, "previous_month"
 
     s_date = start_date or (local_today - timedelta(days=29))
     e_date = end_date or local_today
@@ -223,6 +227,7 @@ def get_analytics_report(
     channel_counts: dict[str, dict[str, Any]] = {}
     pay_method_map: dict[str, list[Any]] = {}
     cust_order_map: dict[UUID, int] = {}
+    cust_spend_map: dict[UUID, Decimal] = {}
 
     for o in paid_orders:
         (
@@ -245,6 +250,7 @@ def get_analytics_report(
         pay_method_map[pm_key][1] += o_total
         if o_customer_id is not None:
             cust_order_map[o_customer_id] = cust_order_map.get(o_customer_id, 0) + 1
+            cust_spend_map[o_customer_id] = cust_spend_map.get(o_customer_id, Decimal("0.00")) + Decimal(str(o_total or 0))
         local_dt = _to_local_dt(o_created, college_tz)
         day_key = local_dt.strftime("%Y-%m-%d")
         iso = local_dt.isocalendar()
@@ -309,16 +315,21 @@ def get_analytics_report(
             d_extra["fulfil_sum"] += fm
             d_extra["fulfil_cnt"] += 1
 
-    # Include cancelled/delayed/completed/pending counts across all orders in range (replaces separate ops_row query)
+    # Include cancelled/delayed/completed/pending/processing counts & gross created value across all orders in range
     all_status_rows = db.execute(
-        select(Order.created_at, Order.status, Order.delayed_minutes).where(*order_filters)
+        select(Order.created_at, Order.status, Order.delayed_minutes, Order.total_amount).where(*order_filters)
     ).all()
     total_created_orders = len(all_status_rows)
     completed_orders = 0
     cancelled_orders = 0
     pending_orders = 0
+    processing_orders = 0
+    ready_orders = 0
+    queued_pending_orders = 0
     delayed_orders = 0
-    for a_created, a_status, a_delayed in all_status_rows:
+    gross_order_value_all = Decimal("0.00")
+    for a_created, a_status, a_delayed, a_total in all_status_rows:
+        gross_order_value_all += Decimal(str(a_total or 0))
         ldt = _to_local_dt(a_created, college_tz)
         dkey = ldt.strftime("%Y-%m-%d")
         wdi = ldt.weekday()
@@ -334,6 +345,12 @@ def get_analytics_report(
             weekday_map[wdi]["cancelled_orders"] += 1
         elif a_status in PENDING_ACTIVE_STATUSES:
             pending_orders += 1
+            if a_status in ("ACCEPTED", "PREPARING"):
+                processing_orders += 1
+            elif a_status == "READY":
+                ready_orders += 1
+            else:
+                queued_pending_orders += 1
         if (a_delayed or 0) > 0:
             delayed_orders += 1
             dx["delayed_orders"] += 1
@@ -343,14 +360,17 @@ def get_analytics_report(
         dx = daily_ops_extra.get(v["date"], {})
         p_cnt = dx.get("prep_cnt", 0)
         f_cnt = dx.get("fulfil_cnt", 0)
+        d_rev = float(v["revenue"])
+        d_ord = v["orders"]
         daily_series.append(
             {
                 "date": v["date"],
-                "orders": v["orders"],
+                "orders": d_ord,
                 "completed_orders": dx.get("completed_orders", 0),
                 "cancelled_orders": dx.get("cancelled_orders", 0),
                 "delayed_orders": dx.get("delayed_orders", 0),
-                "revenue": float(v["revenue"]),
+                "revenue": d_rev,
+                "aov": round(d_rev / d_ord, 2) if d_ord else 0.0,
                 "avg_prep_minutes": round(dx["prep_sum"] / p_cnt, 1) if p_cnt else 0.0,
                 "avg_fulfilment_minutes": round(dx["fulfil_sum"] / f_cnt, 1) if f_cnt else 0.0,
             }
@@ -379,11 +399,22 @@ def get_analytics_report(
         for hr in range(7, 23)
     ]
     weekly_series = [
-        {"week": v["week"], "week_start": v["week_start"], "orders": v["orders"], "revenue": float(v["revenue"])}
+        {
+            "week": v["week"],
+            "week_start": v["week_start"],
+            "orders": v["orders"],
+            "revenue": float(v["revenue"]),
+            "aov": round(float(v["revenue"]) / v["orders"], 2) if v["orders"] else 0.0,
+        }
         for v in sorted(weekly_map.values(), key=lambda x: x["week"])
     ]
     monthly_series = [
-        {"month": v["month"], "orders": v["orders"], "revenue": float(v["revenue"])}
+        {
+            "month": v["month"],
+            "orders": v["orders"],
+            "revenue": float(v["revenue"]),
+            "aov": round(float(v["revenue"]) / v["orders"], 2) if v["orders"] else 0.0,
+        }
         for v in sorted(monthly_map.values(), key=lambda x: x["month"])
     ]
     hourly_series = [
@@ -466,7 +497,13 @@ def get_analytics_report(
     }
 
     top_items = [
-        {"item_name": name, "quantity_sold": q, "order_count": oc, "revenue": r}
+        {
+            "food_item_id": str(next((fi_id for fi_id, (_, _, _) in sold_by_food_id.items() if fi_id in sold_orders_by_food_id), "")) or None,
+            "item_name": name,
+            "quantity_sold": q,
+            "order_count": oc,
+            "revenue": r,
+        }
         for name, (q, r, oc) in sorted(sold_by_name.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0]))[:15]
     ]
 
@@ -615,7 +652,8 @@ def get_analytics_report(
     pay_status_map = {st: (int(cnt), Decimal(str(amt))) for st, cnt, amt in pay_att_rows}
     confirmed_cnt, confirmed_amt = pay_status_map.get("CONFIRMED", (0, Decimal("0.00")))
     failed_cnt, failed_amt = pay_status_map.get("FAILED", (0, Decimal("0.00")))
-    pending_pay_cnt, _ = pay_status_map.get("PENDING", (0, Decimal("0.00")))
+    pending_pay_cnt, pending_pay_amt = pay_status_map.get("PENDING", (0, Decimal("0.00")))
+    refunded_cnt, refunded_amt = pay_status_map.get("REFUNDED", (0, Decimal("0.00")))
     total_attempts = sum(c for c, _ in pay_status_map.values())
     pay_success_rate = round((confirmed_cnt / max(1, total_attempts)) * 100.0, 1) if total_attempts else 0.0
 
@@ -778,10 +816,25 @@ def get_analytics_report(
     )
     active_cust_cnt = len(cust_order_map)
     returning_customers = sum(1 for cnt in cust_order_map.values() if cnt > 1)
+    one_time_customers = active_cust_cnt - returning_customers
     repeat_rate = round((returning_customers / max(1, active_cust_cnt)) * 100.0, 1) if active_cust_cnt else 0.0
+    avg_orders_per_customer = round(total_orders / active_cust_cnt, 2) if active_cust_cnt > 0 else 0.0
     avg_customer_spending = (
         (net_sales / Decimal(active_cust_cnt)).quantize(Decimal("0.01")) if active_cust_cnt > 0 else Decimal("0.00")
     )
+    freq_1 = sum(1 for cnt in cust_order_map.values() if cnt == 1)
+    freq_2_3 = sum(1 for cnt in cust_order_map.values() if 2 <= cnt <= 3)
+    freq_4_6 = sum(1 for cnt in cust_order_map.values() if 4 <= cnt <= 6)
+    freq_7_plus = sum(1 for cnt in cust_order_map.values() if cnt >= 7)
+    customer_frequency_distribution = [
+        {"bucket": "1 order", "customers": freq_1},
+        {"bucket": "2-3 orders", "customers": freq_2_3},
+        {"bucket": "4-6 orders", "customers": freq_4_6},
+        {"bucket": "7+ orders", "customers": freq_7_plus},
+    ]
+    high_value_threshold = max(Decimal("500.00"), (avg_customer_spending * Decimal("1.5")).quantize(Decimal("0.01")))
+    high_value_customers_count = sum(1 for sp in cust_spend_map.values() if sp >= high_value_threshold) if cust_spend_map else 0
+    high_value_customers_spend = sum((sp for sp in cust_spend_map.values() if sp >= high_value_threshold), Decimal("0.00"))
 
     rev_rows_stmt = select(Review.rating, Review.created_at).where(
         Review.is_visible.is_(True), Review.created_at >= s_dt, Review.created_at <= e_dt
@@ -933,10 +986,63 @@ def get_analytics_report(
         )
 
     collected_payments = Decimal(str(confirmed_amt)).quantize(Decimal("0.01"))
-    refunds_amount = Decimal("0.00")
+    refunds_amount = refunded_amt.quantize(Decimal("0.01"))
     cancellation_rate_percent = (
         round((cancelled_orders / max(1, total_created_orders)) * 100.0, 1) if total_created_orders > 0 else 0.0
     )
+
+    # Item-level profitability strictly when Recipe + Ingredient cost records exist (never fabricated)
+    ing_unit_cost_map: dict[UUID, Decimal] = {}
+    for inv_obj, _ing_nm in inv_rows:
+        uc_val = Decimal(str(inv_obj.unit_cost or 0))
+        if uc_val > Decimal("0.00"):
+            prev_uc = ing_unit_cost_map.get(inv_obj.ingredient_id)
+            if prev_uc is None:
+                ing_unit_cost_map[inv_obj.ingredient_id] = uc_val
+    name_to_food_id: dict[str, UUID] = {fi.name: fi.id for fi, _cat in active_foods}
+    for ti in top_items:
+        mapped_fid = name_to_food_id.get(ti["item_name"])
+        ti["food_item_id"] = str(mapped_fid) if mapped_fid else None
+        ti["estimated_profit"] = None
+        ti["estimated_margin_percent"] = None
+        ti["profitability_available"] = False
+    top_fids = [UUID(t["food_item_id"]) for t in top_items if t.get("food_item_id")]
+    if top_fids and ing_unit_cost_map:
+        rec_rows = db.execute(
+            select(
+                Recipe.food_item_id,
+                Recipe.yield_portions,
+                RecipeIngredient.ingredient_id,
+                RecipeIngredient.quantity_required,
+            )
+            .join(RecipeIngredient, RecipeIngredient.recipe_id == Recipe.id)
+            .where(Recipe.food_item_id.in_(top_fids))
+        ).all()
+        cost_per_portion: dict[UUID, Decimal] = {}
+        missing_cost_fids: set[UUID] = set()
+        for r_fid, r_yield, r_ing_id, r_qty in rec_rows:
+            uc_ing = ing_unit_cost_map.get(r_ing_id)
+            if uc_ing is None or uc_ing <= Decimal("0.00"):
+                missing_cost_fids.add(r_fid)
+                continue
+            yp = max(1, int(r_yield or 1))
+            portion_c = (Decimal(str(r_qty or 0)) * uc_ing) / Decimal(yp)
+            cost_per_portion[r_fid] = cost_per_portion.get(r_fid, Decimal("0.00")) + portion_c
+        for ti in top_items:
+            fid_str = ti.get("food_item_id")
+            if not fid_str:
+                continue
+            fid_u = UUID(fid_str)
+            if fid_u in missing_cost_fids or fid_u not in cost_per_portion:
+                continue
+            item_direct_cost = (cost_per_portion[fid_u] * Decimal(ti["quantity_sold"])).quantize(Decimal("0.01"))
+            item_rev_dec = Decimal(str(ti["revenue"]))
+            item_profit = (item_rev_dec - item_direct_cost).quantize(Decimal("0.01"))
+            ti["estimated_profit"] = float(item_profit)
+            ti["estimated_margin_percent"] = (
+                round(float((item_profit / item_rev_dec) * Decimal("100")), 1) if item_rev_dec > Decimal("0.00") else None
+            )
+            ti["profitability_available"] = True
 
     period_comparison = None
     prev_end = s_date - timedelta(days=1)
@@ -948,10 +1054,18 @@ def get_analytics_report(
         Order.created_at <= prev_e_dt,
         Order.payment_status == "CONFIRMED",
     ]
+    prev_all_filters = [
+        Order.created_at >= prev_s_dt,
+        Order.created_at <= prev_e_dt,
+    ]
     if canteen_id:
         prev_filters.append(Order.canteen_id == canteen_id)
+        prev_all_filters.append(Order.canteen_id == canteen_id)
     if food_item_id:
         prev_filters.append(
+            Order.id.in_(select(OrderItem.order_id).where(OrderItem.food_item_id == food_item_id))
+        )
+        prev_all_filters.append(
             Order.id.in_(select(OrderItem.order_id).where(OrderItem.food_item_id == food_item_id))
         )
     elif category_id:
@@ -962,11 +1076,28 @@ def get_analytics_report(
                 .where(FoodItem.category_id == category_id)
             )
         )
+        prev_all_filters.append(
+            Order.id.in_(
+                select(OrderItem.order_id)
+                .join(FoodItem, FoodItem.id == OrderItem.food_item_id)
+                .where(FoodItem.category_id == category_id)
+            )
+        )
     prev_row = db.execute(
-        select(func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0)).where(*prev_filters)
+        select(
+            func.count(Order.id),
+            func.coalesce(func.sum(Order.total_amount), 0),
+            func.coalesce(func.sum(case((Order.status == "COMPLETED", 1), else_=0)), 0),
+            func.count(func.distinct(Order.customer_id)),
+        ).where(*prev_filters)
     ).one()
     prev_orders = int(prev_row[0] or 0)
     prev_rev = Decimal(str(prev_row[1] or 0)).quantize(Decimal("0.01"))
+    prev_completed = int(prev_row[2] or 0)
+    prev_active_customers = int(prev_row[3] or 0)
+    prev_aov = (prev_rev / Decimal(max(1, prev_orders))).quantize(Decimal("0.01")) if prev_orders > 0 else Decimal("0.00")
+    prev_completion_rate = min(100.0, round((prev_completed / max(1, prev_orders)) * 100.0, 1)) if prev_orders > 0 else 0.0
+
     orders_change_pct = (
         round(((total_orders - prev_orders) / prev_orders) * 100.0, 1) if prev_orders > 0 else None
     )
@@ -974,48 +1105,118 @@ def get_analytics_report(
         round(float(((net_sales - prev_rev) / prev_rev) * Decimal("100")), 1) if prev_rev > Decimal("0.00") else None
     )
     if compare_previous:
+        prev_ops_row = db.execute(
+            select(
+                func.count(Order.id),
+                func.coalesce(func.sum(case((Order.status.in_(("CANCELLED", "REJECTED")), 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Order.status.in_(PENDING_ACTIVE_STATUSES), 1), else_=0)), 0),
+            ).where(*prev_all_filters)
+        ).one()
+        prev_created = int(prev_ops_row[0] or 0)
+        prev_cancelled = int(prev_ops_row[1] or 0)
+        prev_pending = int(prev_ops_row[2] or 0)
+        prev_cancel_rate = round((prev_cancelled / max(1, prev_created)) * 100.0, 1) if prev_created > 0 else 0.0
+        aov_change_pct = round(float(((aov - prev_aov) / prev_aov) * Decimal("100")), 1) if prev_aov > Decimal("0.00") else None
+        comp_change_pct = round(((completed_orders - prev_completed) / prev_completed) * 100.0, 1) if prev_completed > 0 else None
+        cust_change_pct = (
+            round(((active_cust_cnt - prev_active_customers) / prev_active_customers) * 100.0, 1)
+            if prev_active_customers > 0
+            else None
+        )
+        comp_rate_diff = round(completion_rate - prev_completion_rate, 1) if prev_orders > 0 else None
+        cancel_rate_diff = round(cancellation_rate_percent - prev_cancel_rate, 1) if prev_created > 0 else None
+        pend_change_pct = round(((pending_orders - prev_pending) / prev_pending) * 100.0, 1) if prev_pending > 0 else None
+
         period_comparison = {
             "previous_range": {"start_date": prev_start.isoformat(), "end_date": prev_end.isoformat()},
             "previous_orders": prev_orders,
+            "previous_created_orders": prev_created,
+            "previous_completed_orders": prev_completed,
+            "previous_pending_orders": prev_pending,
+            "previous_cancelled_orders": prev_cancelled,
+            "previous_active_customers": prev_active_customers,
             "previous_net_revenue": f"{prev_rev:.2f}",
+            "previous_aov": f"{prev_aov:.2f}",
+            "previous_completion_rate": prev_completion_rate,
+            "previous_cancellation_rate": prev_cancel_rate,
             "orders_change_percent": orders_change_pct,
             "revenue_change_percent": rev_change_pct,
+            "aov_change_percent": aov_change_pct,
+            "completed_change_percent": comp_change_pct,
+            "pending_change_percent": pend_change_pct,
+            "active_customers_change_percent": cust_change_pct,
+            "completion_rate_diff_points": comp_rate_diff,
+            "cancellation_rate_diff_points": cancel_rate_diff,
             "data_classification": "actual",
         }
 
-    # Section 7: Real database rule-based Business Insights (never fabricated or mislabeled as ML predictions)
+    # Section 7: Real database rule-based Business Insights (5-domain structured analytics, never fabricated)
     business_insights: list[dict[str, Any]] = []
     if peak_hours:
         top_hr = peak_hours[0]
+        hr_num = int(top_hr["hour"][:2])
+        end_hr_num = (hr_num + 2) % 24
         peak_wd = max(weekday_series, key=lambda x: x["orders"], default=None)
+        what_h = f"Peak ordering period detected around {top_hr['hour']}–{end_hr_num:02d}:00" + (
+            f" (heaviest on {peak_wd['weekday']})" if peak_wd and peak_wd["orders"] > 0 else ""
+        )
+        why_m = "Kitchen preparation queues experience their highest ticket arrival concentration during this window."
+        rec_a = "Pre-batch top-selling ingredients and assign dedicated counter packing support 15 minutes before rush begins."
+        sup_d = f"{top_hr['orders']} confirmed orders totaling ₹{top_hr['revenue']:.2f} during {top_hr['hour']} across the selected date range."
         business_insights.append({
             "id": "peak_demand_window",
             "category": "demand",
+            "bi_domain": "Orders",
             "severity": "info",
-            "title": f"Peak Demand Window: {top_hr['hour']}" + (f" ({peak_wd['weekday']})" if peak_wd and peak_wd["orders"] > 0 else ""),
-            "detail": f"{top_hr['orders']} confirmed orders (Rs.{top_hr['revenue']:.2f}) concentrated around {top_hr['hour']}. Pre-batching top dishes 15 minutes prior reduces queue backlog.",
+            "urgency": "attention",
+            "title": what_h,
+            "detail": f"{sup_d} {rec_a}",
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
             "metric_label": f"{top_hr['orders']} orders",
             "classification": "db_rule_insight",
-            "drilldown": {"tab": "orders", "hour": int(top_hr["hour"][:2])},
+            "drilldown": {"tab": "orders", "hour": hr_num},
         })
     if rev_change_pct is not None and rev_change_pct <= -15.0:
+        what_h = f"Net revenue declined {abs(rev_change_pct)}% compared with the previous period"
+        why_m = "A sustained drop of more than 15% directly lowers canteen cash flow and fixed-cost coverage."
+        rec_a = "Review cancelled orders, menu stockouts, and item availability toggles during campus rush hours."
+        sup_d = f"Verified net revenue is ₹{net_sales:.2f} vs ₹{prev_rev:.2f} ({prev_start.isoformat()} to {prev_end.isoformat()})."
         business_insights.append({
             "id": "revenue_decline_alert",
             "category": "revenue",
+            "bi_domain": "Revenue",
             "severity": "warning",
-            "title": f"Revenue Declined {abs(rev_change_pct)}% vs Previous Period",
-            "detail": f"Verified net revenue is Rs.{net_sales:.2f} compared to Rs.{prev_rev:.2f} in {prev_start.isoformat()} to {prev_end.isoformat()}.",
+            "urgency": "high",
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
             "metric_label": f"{rev_change_pct}%",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders"},
         })
     elif rev_change_pct is not None and rev_change_pct >= 15.0:
+        what_h = f"Revenue grew +{rev_change_pct}% vs the previous equivalent period"
+        why_m = "Stronger order velocity or basket size is driving healthy top-line expansion."
+        rec_a = "Ensure inventory reorder buffers and kitchen prep capacity scale up to match this higher demand."
+        sup_d = f"Verified net revenue rose from ₹{prev_rev:.2f} to ₹{net_sales:.2f} across {total_orders} paid orders."
         business_insights.append({
             "id": "revenue_growth_highlight",
             "category": "revenue",
+            "bi_domain": "Revenue",
             "severity": "positive",
-            "title": f"Revenue Grew +{rev_change_pct}% vs Previous Period",
-            "detail": f"Verified net revenue rose from Rs.{prev_rev:.2f} to Rs.{net_sales:.2f} across {total_orders} paid orders.",
+            "urgency": "positive",
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
             "metric_label": f"+{rev_change_pct}%",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders"},
@@ -1023,52 +1224,134 @@ def get_analytics_report(
     if top_items:
         best = top_items[0]
         zero_sellers = [x for x in least_ordered_items if x["quantity_sold"] == 0]
+        what_h = f"{best['item_name']} leads menu demand with {best['quantity_sold']} units sold"
+        why_m = "Top-performing dishes drive disproportionate revenue; running out of stock immediately hurts sales."
+        rec_a = (
+            f"Keep {best['item_name']} prioritized in prep schedules."
+            + (f" Check visibility/pricing for {len(zero_sellers)} active item(s) with 0 orders before drawing conclusions." if zero_sellers else "")
+        )
+        sup_d = f"{best['item_name']} generated ₹{best['revenue']:.2f} across {best['order_count']} confirmed orders."
         business_insights.append({
             "id": "product_performance_split",
             "category": "product",
+            "bi_domain": "Food",
             "severity": "positive" if not zero_sellers else "info",
-            "title": f"Top Seller: {best['item_name']} ({best['quantity_sold']} sold)",
-            "detail": (
-                f"{best['item_name']} generated Rs.{best['revenue']:.2f}."
-                + (f" {len(zero_sellers)} active menu item(s) had 0 orders in this window." if zero_sellers else "")
-            ),
-            "metric_label": f"Rs.{best['revenue']:.2f}",
+            "urgency": "positive" if not zero_sellers else "info",
+            "title": what_h,
+            "detail": sup_d + (f" {len(zero_sellers)} active menu item(s) had 0 orders in this window." if zero_sellers else ""),
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
+            "metric_label": f"₹{best['revenue']:.2f}",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "items"},
         })
     if low_stock_rows or out_of_stock_items:
+        what_h = f"{len(low_stock_rows)} low-stock ingredient(s) & {len(out_of_stock_items)} unavailable dish(es)"
+        why_m = "Low ingredient reserves force automatic menu blocks and cause lost student orders during rush periods."
+        rec_a = "Raise draft purchase orders or restock critical ingredients before the next meal slot."
+        sup_d = f"{len(low_stock_rows)} ingredients are at/below reorder level; {len(out_of_stock_items)} menu items are currently unavailable."
         business_insights.append({
             "id": "inventory_and_stockouts",
             "category": "inventory",
+            "bi_domain": "Operational",
             "severity": "critical" if len(out_of_stock_items) > 0 else "warning",
-            "title": f"{len(low_stock_rows)} Low-Stock Ingredients & {len(out_of_stock_items)} Unavailable Dishes",
+            "urgency": "critical" if len(out_of_stock_items) > 0 else "high",
+            "title": what_h,
             "detail": "Replenish low-stock ingredients promptly to prevent recipe auto-blocks on peak items.",
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
             "metric_label": f"{len(low_stock_rows)} alerts",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "inventory", "low_only": True},
         })
     if cancellation_rate_percent >= 10.0 and cancelled_orders >= 2:
+        what_h = f"Elevated order cancellation rate at {cancellation_rate_percent}%"
+        why_m = "High cancellations signal either long wait times, abandoned checkouts, or stock unavailability after ordering."
+        rec_a = "Inspect cancelled orders below to see whether unpaid abandonment or kitchen rejection caused the spike."
+        sup_d = f"{cancelled_orders} of {total_created_orders} total created orders were cancelled or rejected in this period."
         business_insights.append({
             "id": "cancellation_spike",
             "category": "operations",
+            "bi_domain": "Orders",
             "severity": "critical",
-            "title": f"Elevated Cancellation Rate ({cancellation_rate_percent}%)",
-            "detail": f"{cancelled_orders} of {total_created_orders} orders in the selected range were cancelled or rejected.",
+            "urgency": "critical",
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
             "metric_label": f"{cancelled_orders} cancelled",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders", "status": "CANCELLED"},
         })
     if delayed_orders > 0 or (prep_durations and (sum(prep_durations) / len(prep_durations)) > 15.0):
         avg_p = round(sum(prep_durations) / len(prep_durations), 1) if prep_durations else 0.0
+        what_h = f"Preparation delays detected ({delayed_orders} delayed, avg prep {avg_p} min)"
+        why_m = "Slow kitchen turnaround increases counter crowding and drives student frustration between lectures."
+        rec_a = "Rebalance station workload in Kitchen Management and stagger high-prep items during busy hours."
+        sup_d = f"{delayed_orders} orders exceeded expected timing; measured confirmed-to-ready average is {avg_p} min."
         business_insights.append({
             "id": "prep_delay_alert",
             "category": "operations",
+            "bi_domain": "Operational",
             "severity": "warning",
-            "title": f"Preparation Delays Detected ({delayed_orders} delayed, avg {avg_p}m)",
+            "urgency": "high",
+            "title": what_h,
             "detail": "Review kitchen station assignments and prep batching during peak windows.",
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
             "metric_label": f"{delayed_orders} delayed",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders", "delayed_only": True},
+        })
+    if failed_cnt > 0 or pending_pay_cnt >= 3:
+        what_h = f"{failed_cnt} failed and {pending_pay_cnt} pending payment attempt(s) recorded"
+        why_m = "Payment friction lowers conversion even when students are ready to buy."
+        rec_a = "Run Gateway Auto-Reconciliation under Payments & Transactions to verify pending Razorpay captures."
+        sup_d = f"Out of {total_attempts} payment attempts, {confirmed_cnt} succeeded ({pay_success_rate}%), {failed_cnt} failed (₹{failed_amt:.2f}), and {pending_pay_cnt} are pending."
+        business_insights.append({
+            "id": "payment_friction_alert",
+            "category": "payment",
+            "bi_domain": "Payment",
+            "severity": "warning" if failed_cnt > 0 else "info",
+            "urgency": "high" if failed_cnt >= 3 else "attention",
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
+            "metric_label": f"{pay_success_rate}% success",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders", "status": "PAYMENT_PENDING"},
+        })
+    elif total_attempts > 0:
+        what_h = f"Healthy payment reliability at {pay_success_rate}% success rate"
+        why_m = "Reliable Razorpay & Counter POS confirmation minimizes dropped orders at checkout."
+        rec_a = "Continue automated reconciliation schedules; no payment intervention needed."
+        sup_d = f"{confirmed_cnt} of {total_attempts} payment attempts confirmed (₹{confirmed_amt:.2f})."
+        business_insights.append({
+            "id": "payment_reliability_good",
+            "category": "payment",
+            "bi_domain": "Payment",
+            "severity": "positive",
+            "urgency": "positive",
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
+            "metric_label": f"{pay_success_rate}% ok",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders"},
         })
 
     generated_at_iso = datetime.now(timezone.utc).isoformat()
@@ -1097,9 +1380,11 @@ def get_analytics_report(
         "empty_message": "No data available (no confirmed orders for the selected date range)." if total_orders == 0 else None,
         "data_classification": "actual",
         "financial_analytics": {
+            "gross_order_value_all": f"{gross_order_value_all:.2f}",
             "verified_gross_sales": f"{Decimal(str(gross_sales)):.2f}",
             "collected_payments": f"{collected_payments:.2f}",
             "refunds_amount": f"{refunds_amount:.2f}",
+            "refunded_count": refunded_cnt,
             "no_refund_policy_enforced": True,
             "historical_discounts": f"{Decimal(str(discounts)):.2f}",
             "historical_taxes": f"{Decimal(str(tax_collected)):.2f}",
@@ -1158,8 +1443,11 @@ def get_analytics_report(
             "confirmed_count": confirmed_cnt,
             "failed_count": failed_cnt,
             "pending_count": pending_pay_cnt,
+            "refunded_count": refunded_cnt,
             "confirmed_amount": f"{confirmed_amt:.2f}",
             "failed_amount": f"{failed_amt:.2f}",
+            "pending_amount": f"{pending_pay_amt:.2f}",
+            "refunded_amount": f"{refunds_amount:.2f}",
             "success_rate_percent": pay_success_rate,
         },
         "operations": {
@@ -1167,8 +1455,13 @@ def get_analytics_report(
             "cancelled_orders": int(cancelled_orders),
             "cancellation_rate_percent": cancellation_rate_percent,
             "pending_orders": int(pending_orders),
+            "queued_pending_orders": int(queued_pending_orders),
+            "processing_orders": int(processing_orders),
+            "ready_orders": int(ready_orders),
             "delayed_orders": int(delayed_orders),
             "completion_rate_percent": completion_rate,
+            "has_prep_timestamps": bool(prep_durations),
+            "has_completion_timestamps": bool(completion_durations),
             "avg_prep_minutes": round(sum(prep_durations) / len(prep_durations), 1) if prep_durations else 0.0,
             "avg_pickup_wait_minutes": round(sum(wait_durations) / len(wait_durations), 1) if wait_durations else 0.0,
             "avg_completion_minutes": round(sum(completion_durations) / len(completion_durations), 1) if completion_durations else 0.0,
@@ -1197,8 +1490,13 @@ def get_analytics_report(
             "new_customers": int(new_customers),
             "active_ordering_customers": active_cust_cnt,
             "returning_customers": returning_customers,
+            "one_time_customers": one_time_customers,
             "repeat_order_rate_percent": repeat_rate,
+            "avg_orders_per_customer": avg_orders_per_customer,
             "avg_customer_spending": f"{avg_customer_spending:.2f}",
+            "high_value_customers_count": high_value_customers_count,
+            "high_value_customers_spend": f"{high_value_customers_spend:.2f}",
+            "order_frequency_distribution": customer_frequency_distribution,
             "average_food_rating": round(float(avg_rating), 2),
             "review_count": len(rev_rows),
             "rating_distribution": rating_dist,

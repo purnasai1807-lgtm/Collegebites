@@ -30,11 +30,16 @@ import { Badge, Button, Modal, crowdBadgeTone, useToast } from "../ui/Primitives
 
 export const Navbar: React.FC = () => {
   const location = useLocation();
+  const user = useAppStore((s) => s.user);
+  const isAuthorizedAdminRoute =
+    location.pathname.startsWith("/admin") &&
+    Boolean(user?.roles?.some((r) => ["super_admin", "college_admin", "canteen_manager"].includes(r)));
   if (
     location.pathname.startsWith("/board") ||
     location.pathname.startsWith("/display") ||
     location.pathname.startsWith("/tv") ||
-    location.pathname.startsWith("/kiosk")
+    location.pathname.startsWith("/kiosk") ||
+    isAuthorizedAdminRoute
   ) {
     return null;
   }

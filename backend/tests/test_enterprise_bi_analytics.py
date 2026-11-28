@@ -223,14 +223,20 @@ def test_enterprise_bi_all_seven_sections_filters_drilldowns_and_cache_invalidat
     assert bi["inventory"]["out_of_stock_products_count"] >= 1
     assert any(p["food_item_id"] == extra_item["id"] for p in bi["inventory"]["out_of_stock_products"])
 
-    # Section 7: Real DB-Backed Business Insights
+    # Section 7: Real DB-Backed Business Insights (with V2 structured fields)
     assert isinstance(bi["business_insights"], list)
     assert len(bi["business_insights"]) >= 1
-    assert all("id" in ins and "drilldown" in ins for ins in bi["business_insights"])
+    assert all(
+        "id" in ins and "drilldown" in ins and "what_happened" in ins and "recommended_action" in ins
+        for ins in bi["business_insights"]
+    )
+    assert "aov" in bi["sales"]["daily_series"][0]
+    assert "order_frequency_distribution" in bi["customers"]
+    assert "has_prep_timestamps" in bi["operations"]
 
     # 5. Date Presets & Custom Range Validation
     today = today_college()
-    for preset in ("today", "yesterday", "last_7_days", "last_30_days", "this_month"):
+    for preset in ("today", "yesterday", "last_7_days", "last_30_days", "this_month", "previous_month"):
         p_res = client.get(f"/api/v1/reports/dashboard?canteen_id={cid}&preset={preset}", headers=admin["headers"])
         assert p_res.status_code == 200
         assert p_res.json()["range"]["preset"] == preset
