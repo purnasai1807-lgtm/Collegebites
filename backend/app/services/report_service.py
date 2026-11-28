@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.cache import NS_REPORTS, cache_manager
 from app.core.time_utils import get_college_tz, today_college
 from app.models.auth import StaffProfile, User
-from app.models.college import Counter
+from app.models.college import Canteen, Counter
 from app.models.engagement import Review, SupportTicket
 from app.models.inventory import InventoryItem, PurchaseOrder, StockBatch, StockMovement, WastageRecord
 from app.models.menu import FoodCategory, FoodItem, Ingredient, Recipe, RecipeIngredient
@@ -203,9 +203,11 @@ def get_analytics_report(
 
     weekly_map: dict[str, dict[str, Any]] = {}
     monthly_map: dict[str, dict[str, Any]] = {}
+    yearly_map: dict[str, dict[str, Any]] = {}
     hourly_counts: dict[int, int] = {h: 0 for h in range(24)}
     hourly_completed: dict[int, int] = {h: 0 for h in range(24)}
     hourly_revenue: dict[int, Decimal] = {h: Decimal("0.00") for h in range(24)}
+    hourly_prep_map: dict[int, list[float]] = {}
     WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weekday_map: dict[int, dict[str, Any]] = {
         idx: {
@@ -281,6 +283,12 @@ def get_analytics_report(
         monthly_map[month_key]["orders"] += 1
         monthly_map[month_key]["revenue"] += o_total
 
+        year_key = local_dt.strftime("%Y")
+        if year_key not in yearly_map:
+            yearly_map[year_key] = {"year": year_key, "orders": 0, "revenue": Decimal("0.00")}
+        yearly_map[year_key]["orders"] += 1
+        yearly_map[year_key]["revenue"] += o_total
+
         weekday_map[wd]["orders"] += 1
         if o_status == "COMPLETED":
             weekday_map[wd]["completed_orders"] += 1
@@ -305,6 +313,7 @@ def get_analytics_report(
         if o_confirmed and o_ready:
             pm = max(0.0, (o_ready - o_confirmed).total_seconds() / 60.0)
             prep_durations.append(pm)
+            hourly_prep_map.setdefault(hr, []).append(pm)
             d_extra["prep_sum"] += pm
             d_extra["prep_cnt"] += 1
         if o_ready and o_completed:
@@ -417,6 +426,15 @@ def get_analytics_report(
         }
         for v in sorted(monthly_map.values(), key=lambda x: x["month"])
     ]
+    yearly_series = [
+        {
+            "year": v["year"],
+            "orders": v["orders"],
+            "revenue": float(v["revenue"]),
+            "aov": round(float(v["revenue"]) / v["orders"], 2) if v["orders"] else 0.0,
+        }
+        for v in sorted(yearly_map.values(), key=lambda x: x["year"])
+    ]
     hourly_series = [
         {
             "hour": f"{h:02d}:00",
@@ -431,6 +449,59 @@ def get_analytics_report(
         for h, c in sorted(hourly_counts.items(), key=lambda kv: (-kv[1], -float(hourly_revenue[kv[0]]), kv[0]))
         if c > 0
     ]
+
+    # Peak Hour Intelligence (busiest 2h window, highest/lowest days, quiet hours & staffing guide)
+    peak_hour_intel: dict[str, Any] = {
+        "has_data": bool(peak_hours),
+        "peak_window": None,
+        "peak_window_orders": 0,
+        "peak_window_revenue": 0.0,
+        "peak_workload_share_percent": 0.0,
+        "peak_avg_prep_minutes": None,
+        "highest_demand_day": None,
+        "lowest_demand_day": None,
+        "lowest_demand_hours": [],
+        "staffing_recommendation": "No confirmed orders in this window yet to detect rush patterns.",
+    }
+    if total_orders > 0 and peak_hours:
+        best_start_h = max(
+            range(23),
+            key=lambda h: (
+                hourly_counts[h] + hourly_counts[h + 1],
+                float(hourly_revenue[h] + hourly_revenue[h + 1]),
+                -h,
+            ),
+        )
+        win_orders = hourly_counts[best_start_h] + hourly_counts[best_start_h + 1]
+        win_rev = float(hourly_revenue[best_start_h] + hourly_revenue[best_start_h + 1])
+        win_preps = hourly_prep_map.get(best_start_h, []) + hourly_prep_map.get(best_start_h + 1, [])
+        win_share = round((win_orders / max(1, total_orders)) * 100.0, 1)
+        peak_wd_row = max(weekday_series, key=lambda x: (x["orders"], x["revenue"]))
+        active_wds = [w for w in weekday_series if w["orders"] > 0]
+        low_wd_pool = weekday_series if not active_wds else weekday_series
+        low_wd_row = min(low_wd_pool, key=lambda x: (x["orders"], x["revenue"], x["weekday_index"]))
+        low_hours = [
+            {"hour": f"{h:02d}:00", "orders": hourly_counts[h]}
+            for h in sorted(range(8, 22), key=lambda x: (hourly_counts[x], float(hourly_revenue[x]), x))[:3]
+        ]
+        peak_win_label = f"{best_start_h:02d}:00–{(best_start_h + 2) % 24:02d}:00"
+        if win_share >= 35.0:
+            staff_rec = f"{win_share}% of orders arrive between {peak_win_label}. Schedule full counter + prep coverage 15 min prior."
+        else:
+            staff_rec = f"Peak demand clusters at {peak_win_label} ({win_orders} orders, {win_share}% share). Pre-batch fast-moving items before {best_start_h:02d}:00."
+        peak_hour_intel = {
+            "has_data": True,
+            "peak_window": peak_win_label,
+            "peak_hour_start": best_start_h,
+            "peak_window_orders": win_orders,
+            "peak_window_revenue": round(win_rev, 2),
+            "peak_workload_share_percent": win_share,
+            "peak_avg_prep_minutes": round(sum(win_preps) / len(win_preps), 1) if win_preps else None,
+            "highest_demand_day": peak_wd_row,
+            "lowest_demand_day": low_wd_row,
+            "lowest_demand_hours": low_hours,
+            "staffing_recommendation": staff_rec,
+        }
 
     # Single unified OrderItem query feeding item performance, category sales, top-5 demand trends, and market-basket pairs
     oi_all_rows = db.execute(
@@ -457,6 +528,8 @@ def get_analytics_report(
     sold_rev_by_name: dict[str, float] = {}
     sold_orders_by_name: dict[str, set[UUID]] = {}
     cat_acc: dict[str, list[Any]] = {}
+    cat_orders: dict[str, set[UUID]] = {}
+    cat_id_map: dict[str, UUID] = {}
     items_per_order: dict[UUID, set[str]] = {}
 
     for idx_oi, (oid_val, o_ts, fid, iname, qty, line_tot, f_cat_id, cat_name) in enumerate(oi_all_rows):
@@ -483,6 +556,9 @@ def get_analytics_report(
                 cat_acc[cat_name] = [0, Decimal("0.00")]
             cat_acc[cat_name][0] += q_i
             cat_acc[cat_name][1] += Decimal(str(line_tot or 0))
+            cat_orders.setdefault(cat_name, set()).add(oid_val)
+            if f_cat_id:
+                cat_id_map[cat_name] = f_cat_id
 
         if idx_oi < 6000 and iname:
             items_per_order.setdefault(oid_val, set()).add(iname)
@@ -629,15 +705,50 @@ def get_analytics_report(
         for (a, b), cnt in sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
     ]
 
-    category_sales = [{"category": name, "quantity": vals[0], "revenue": float(vals[1])} for name, vals in cat_acc.items()]
+    total_cat_rev = sum((float(vals[1]) for vals in cat_acc.values()), 0.0)
+    category_sales = sorted(
+        [
+            {
+                "category_id": str(cat_id_map[name]) if name in cat_id_map else None,
+                "category": name,
+                "quantity": vals[0],
+                "order_count": len(cat_orders.get(name, set())),
+                "revenue": float(vals[1]),
+                "revenue_share_percent": round((float(vals[1]) / total_cat_rev) * 100.0, 1) if total_cat_rev > 0 else 0.0,
+            }
+            for name, vals in cat_acc.items()
+        ],
+        key=lambda x: (-x["revenue"], -x["quantity"], x["category"]),
+    )
+    best_category_by_revenue = category_sales[0] if category_sales else None
 
     counter_rows = db.execute(
-        select(Counter.name, func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0))
+        select(Canteen.name, Counter.name, func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0))
         .join(Counter, Counter.id == Order.counter_id)
+        .join(Canteen, Canteen.id == Counter.canteen_id)
         .where(*paid_filters)
-        .group_by(Counter.name)
+        .group_by(Canteen.name, Counter.name)
     ).all()
-    counter_sales = [{"counter": name, "orders": int(cnt), "revenue": float(rev)} for name, cnt, rev in counter_rows]
+    counter_sales = [{"counter": name, "canteen": canteen_nm, "orders": int(cnt), "revenue": float(rev)} for canteen_nm, name, cnt, rev in counter_rows]
+    canteen_acc: dict[str, list[Any]] = {}
+    for canteen_nm, _cnt_nm, cnt, rev in counter_rows:
+        if canteen_nm not in canteen_acc:
+            canteen_acc[canteen_nm] = [0, Decimal("0.00")]
+        canteen_acc[canteen_nm][0] += int(cnt or 0)
+        canteen_acc[canteen_nm][1] += Decimal(str(rev or 0))
+    total_canteen_rev = sum((float(v[1]) for v in canteen_acc.values()), 0.0)
+    canteen_sales = sorted(
+        [
+            {
+                "canteen": cn,
+                "orders": vals[0],
+                "revenue": float(vals[1]),
+                "revenue_share_percent": round((float(vals[1]) / total_canteen_rev) * 100.0, 1) if total_canteen_rev > 0 else 0.0,
+            }
+            for cn, vals in canteen_acc.items()
+        ],
+        key=lambda x: (-x["revenue"], -x["orders"], x["canteen"]),
+    )
 
     # Counter utilization & prep/wait performance
     cnt_stmt = select(Counter).where(Counter.is_active.is_(True)).order_by(Counter.name.asc())
@@ -851,16 +962,23 @@ def get_analytics_report(
 
     # 4. Customer metrics (new, returning, repeat rate, average spending, satisfaction trends)
     total_customers = db.scalar(select(func.count(User.id)).where(User.user_kind == "customer")) or 0
-    new_customers = (
-        db.scalar(
-            select(func.count(User.id)).where(
-                User.user_kind == "customer",
-                User.created_at >= s_dt,
-                User.created_at <= e_dt,
-            )
+    new_cust_dates = db.scalars(
+        select(User.created_at).where(
+            User.user_kind == "customer",
+            User.created_at >= s_dt,
+            User.created_at <= e_dt,
         )
-        or 0
-    )
+    ).all()
+    new_customers = len(new_cust_dates)
+    cust_growth_map: dict[str, int] = {d["date"]: 0 for d in daily_series}
+    for nc_ts in new_cust_dates:
+        if nc_ts:
+            nc_key = _to_local_dt(nc_ts, college_tz).strftime("%Y-%m-%d")
+            cust_growth_map[nc_key] = cust_growth_map.get(nc_key, 0) + 1
+    new_customers_trends = [
+        {"date": dk, "new_customers": cnt}
+        for dk, cnt in sorted(cust_growth_map.items(), key=lambda x: x[0])
+    ]
     active_cust_cnt = len(cust_order_map)
     returning_customers = sum(1 for cnt in cust_order_map.values() if cnt > 1)
     one_time_customers = active_cust_cnt - returning_customers
@@ -1091,7 +1209,28 @@ def get_analytics_report(
             )
             entry["profitability_available"] = True
 
+    most_profitable_category: Optional[dict[str, Any]] = None
+    cat_profit_map: dict[str, dict[str, float]] = {}
+    for entry in all_products_performance:
+        if entry.get("profitability_available") and entry.get("estimated_profit") is not None:
+            cname = entry.get("category_name") or "Uncategorized"
+            slot = cat_profit_map.setdefault(cname, {"profit": 0.0, "revenue": 0.0})
+            slot["profit"] += float(entry["estimated_profit"])
+            slot["revenue"] += float(entry["revenue"])
+    if cat_profit_map:
+        top_cat_name, top_cat_vals = max(cat_profit_map.items(), key=lambda kv: (kv[1]["profit"], kv[1]["revenue"]))
+        prof_rounded = round(top_cat_vals["profit"], 2)
+        rev_rounded = round(top_cat_vals["revenue"], 2)
+        most_profitable_category = {
+            "category": top_cat_name,
+            "estimated_profit": prof_rounded,
+            "revenue": rev_rounded,
+            "margin_percent": round((prof_rounded / rev_rounded) * 100.0, 1) if rev_rounded > 0 else None,
+            "profitability_available": True,
+        }
+
     period_comparison = None
+    declining_items: list[dict[str, Any]] = []
     prev_end = s_date - timedelta(days=1)
     prev_start = prev_end - timedelta(days=max(0, span_days - 1))
     prev_s_dt = datetime.combine(prev_start, time.min, tzinfo=college_tz)
@@ -1174,6 +1313,58 @@ def get_analytics_report(
         cancel_rate_diff = round(cancellation_rate_percent - prev_cancel_rate, 1) if prev_created > 0 else None
         pend_change_pct = round(((pending_orders - prev_pending) / prev_pending) * 100.0, 1) if prev_pending > 0 else None
 
+        prev_item_rows = db.execute(
+            select(
+                OrderItem.food_item_id,
+                OrderItem.item_name,
+                func.coalesce(func.sum(OrderItem.quantity), 0),
+                func.coalesce(func.sum(OrderItem.line_total), 0),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(*prev_filters)
+            .group_by(OrderItem.food_item_id, OrderItem.item_name)
+        ).all()
+        prev_by_fid: dict[UUID, tuple[int, float]] = {}
+        prev_by_name: dict[str, tuple[int, float]] = {}
+        for p_fid, p_name, p_qty, p_rev_i in prev_item_rows:
+            pq = int(p_qty or 0)
+            pr = float(p_rev_i or 0)
+            if p_fid:
+                prev_by_fid[p_fid] = (pq, pr)
+            if p_name:
+                prev_by_name[p_name] = (pq, pr)
+        raw_declining: list[dict[str, Any]] = []
+        for prod in all_products_performance:
+            fid_str = prod.get("food_item_id")
+            p_tup = None
+            if fid_str:
+                try:
+                    p_tup = prev_by_fid.get(UUID(fid_str))
+                except ValueError:
+                    p_tup = None
+            if p_tup is None:
+                p_tup = prev_by_name.get(prod["item_name"])
+            if not p_tup:
+                continue
+            prev_q, prev_r = p_tup
+            curr_q = int(prod["quantity_sold"] or 0)
+            if prev_q > curr_q and prev_q > 0:
+                drop_q = prev_q - curr_q
+                drop_pct = round(((curr_q - prev_q) / prev_q) * 100.0, 1)
+                raw_declining.append({
+                    "food_item_id": fid_str,
+                    "item_name": prod["item_name"],
+                    "category_name": prod.get("category_name"),
+                    "previous_quantity": prev_q,
+                    "current_quantity": curr_q,
+                    "qty_change": -drop_q,
+                    "qty_change_percent": drop_pct,
+                    "previous_revenue": round(prev_r, 2),
+                    "current_revenue": round(float(prod.get("revenue") or 0), 2),
+                    "is_available": prod.get("is_available", True),
+                })
+        declining_items = sorted(raw_declining, key=lambda x: (x["qty_change"], x["qty_change_percent"], x["item_name"]))[:10]
+
         period_comparison = {
             "previous_range": {"start_date": prev_start.isoformat(), "end_date": prev_end.isoformat()},
             "previous_orders": prev_orders,
@@ -1198,18 +1389,20 @@ def get_analytics_report(
         }
 
     # Section 7: Real database rule-based Business Insights (5-domain structured analytics, never fabricated)
+    insight_period_label = f"{s_date.isoformat()} to {e_date.isoformat()}"
     business_insights: list[dict[str, Any]] = []
     if peak_hours:
         top_hr = peak_hours[0]
         hr_num = int(top_hr["hour"][:2])
-        end_hr_num = (hr_num + 2) % 24
-        peak_wd = max(weekday_series, key=lambda x: x["orders"], default=None)
-        what_h = f"Peak ordering period detected around {top_hr['hour']}–{end_hr_num:02d}:00" + (
-            f" (heaviest on {peak_wd['weekday']})" if peak_wd and peak_wd["orders"] > 0 else ""
+        win_label = peak_hour_intel.get("peak_window") or f"{top_hr['hour']}–{(hr_num + 2) % 24:02d}:00"
+        win_share_pct = peak_hour_intel.get("peak_workload_share_percent", 0.0)
+        peak_wd = peak_hour_intel.get("highest_demand_day") or max(weekday_series, key=lambda x: x["orders"], default=None)
+        what_h = f"Peak demand hits during {win_label}" + (
+            f" ({peak_wd['weekday']} is busiest)" if peak_wd and peak_wd["orders"] > 0 else ""
         )
         why_m = "Kitchen preparation queues experience their highest ticket arrival concentration during this window."
-        rec_a = "Pre-batch top-selling ingredients and assign dedicated counter packing support 15 minutes before rush begins."
-        sup_d = f"{top_hr['orders']} confirmed orders totaling ₹{top_hr['revenue']:.2f} during {top_hr['hour']} across the selected date range."
+        rec_a = peak_hour_intel.get("staffing_recommendation") or "Pre-batch top-selling ingredients and assign dedicated counter packing support 15 minutes before rush begins."
+        sup_d = f"{top_hr['orders']} confirmed orders totaling ₹{top_hr['revenue']:.2f} in top hour {top_hr['hour']} ({win_share_pct}% of orders in peak 2h window)."
         business_insights.append({
             "id": "peak_demand_window",
             "category": "demand",
@@ -1222,7 +1415,8 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
-            "metric_label": f"{top_hr['orders']} orders",
+            "time_period": insight_period_label,
+            "metric_label": f"{win_share_pct}% peak load",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders", "hour": hr_num},
         })
@@ -1243,6 +1437,7 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"{rev_change_pct}%",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders"},
@@ -1264,20 +1459,23 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"+{rev_change_pct}%",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders"},
         })
     if top_items:
         best = top_items[0]
-        zero_sellers = [x for x in least_ordered_items if x["quantity_sold"] == 0]
-        what_h = f"{best['item_name']} leads menu demand with {best['quantity_sold']} units sold"
-        why_m = "Top-performing dishes drive disproportionate revenue; running out of stock immediately hurts sales."
+        best_perf = highest_selling_item or best
+        best_share = best_perf.get("revenue_share_percent", round((best["revenue"] / net_sales_float) * 100.0, 1) if net_sales_float > 0 else 0.0)
+        zero_sellers = [x for x in all_products_performance if x["quantity_sold"] == 0]
+        what_h = f"{best['item_name']} contributed {best_share}% of revenue ({best['quantity_sold']} sold)"
+        why_m = "Top-performing dishes drive disproportionate cash flow; stockouts on best-sellers immediately cut student orders."
         rec_a = (
-            f"Keep {best['item_name']} prioritized in prep schedules."
-            + (f" Check visibility/pricing for {len(zero_sellers)} active item(s) with 0 orders before drawing conclusions." if zero_sellers else "")
+            f"Ensure uninterrupted ingredient stock for {best['item_name']} before peak hours."
+            + (f" Review visibility, price, or meal-slot timing for {len(zero_sellers)} active dish(es) with 0 orders." if zero_sellers else "")
         )
-        sup_d = f"{best['item_name']} generated ₹{best['revenue']:.2f} across {best['order_count']} confirmed orders."
+        sup_d = f"{best['item_name']} generated ₹{best['revenue']:.2f} ({best_share}% share) across {best['order_count']} confirmed orders."
         business_insights.append({
             "id": "product_performance_split",
             "category": "product",
@@ -1290,9 +1488,62 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
-            "metric_label": f"₹{best['revenue']:.2f}",
+            "time_period": insight_period_label,
+            "metric_label": f"{best_share}% share",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "items"},
+        })
+    if declining_items:
+        top_dec = declining_items[0]
+        what_h = f"Demand dropped for {top_dec['item_name']} ({top_dec['qty_change_percent']}% vs prior period)"
+        why_m = "Shrinking item velocity can indicate menu fatigue, quality shifts, or stock unavailability during peak slots."
+        rec_a = f"Check ingredient quality, portion pricing, and visibility for {top_dec['item_name']} across {len(declining_items)} declining dish(es)."
+        sup_d = f"{top_dec['item_name']} fell from {top_dec['previous_quantity']} to {top_dec['current_quantity']} units sold ({len(declining_items)} items declined overall)."
+        business_insights.append({
+            "id": "declining_products_alert",
+            "category": "product",
+            "bi_domain": "Food",
+            "severity": "warning",
+            "urgency": "attention",
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
+            "time_period": insight_period_label,
+            "metric_label": f"{top_dec['qty_change_percent']}%",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "items"},
+        })
+    if active_cust_cnt >= 2:
+        if repeat_rate < 30.0:
+            what_h = f"Repeat purchase rate is low at {repeat_rate}% ({returning_customers} of {active_cust_cnt} buyers)"
+            why_m = "When students buy only once, daily revenue stays heavily dependent on first-time traffic."
+            rec_a = "Feature top-rated combo items on the home banner and gather quick post-order feedback on slow counters."
+            rep_sev, rep_urg = "warning", "attention"
+        else:
+            what_h = f"Strong student loyalty: {repeat_rate}% repeat purchase rate"
+            why_m = "High repeat buying lowers marketing effort and stabilizes predictable daily kitchen volume."
+            rec_a = "Maintain consistent portion quality and keep frequent combo pairs highlighted on kiosks."
+            rep_sev, rep_urg = "positive", "positive"
+        sup_d = f"{returning_customers} returning customers ordered >1 time; average buyer placed {avg_orders_per_customer} orders spending ₹{avg_customer_spending}."
+        business_insights.append({
+            "id": "repeat_customer_health",
+            "category": "customer",
+            "bi_domain": "Customers",
+            "severity": rep_sev,
+            "urgency": rep_urg,
+            "title": what_h,
+            "detail": sup_d,
+            "what_happened": what_h,
+            "why_it_matters": why_m,
+            "recommended_action": rec_a,
+            "supporting_data": sup_d,
+            "time_period": insight_period_label,
+            "metric_label": f"{repeat_rate}% repeat",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders"},
         })
     if low_stock_rows or out_of_stock_items:
         what_h = f"{len(low_stock_rows)} low-stock ingredient(s) & {len(out_of_stock_items)} unavailable dish(es)"
@@ -1311,6 +1562,7 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"{len(low_stock_rows)} alerts",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "inventory", "low_only": True},
@@ -1332,6 +1584,7 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"{cancelled_orders} cancelled",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders", "status": "CANCELLED"},
@@ -1354,6 +1607,7 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"{delayed_orders} delayed",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders", "delayed_only": True},
@@ -1375,6 +1629,7 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"{pay_success_rate}% success",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders", "status": "PAYMENT_PENDING"},
@@ -1396,6 +1651,7 @@ def get_analytics_report(
             "why_it_matters": why_m,
             "recommended_action": rec_a,
             "supporting_data": sup_d,
+            "time_period": insight_period_label,
             "metric_label": f"{pay_success_rate}% ok",
             "classification": "db_rule_insight",
             "drilldown": {"tab": "orders"},
@@ -1469,12 +1725,14 @@ def get_analytics_report(
             "daily_series": daily_series,
             "weekly_series": weekly_series,
             "monthly_series": monthly_series,
+            "yearly_series": yearly_series,
             "hourly_series": hourly_series,
             "weekday_series": weekday_series,
             "hourly_heatmap": hourly_heatmap,
             "top_items": top_items,
             "least_ordered_items": least_ordered_items,
             "all_products_performance": all_products_performance,
+            "declining_items": declining_items,
             "highest_selling_item": highest_selling_item,
             "highest_revenue_item": highest_revenue_item,
             "lowest_selling_sold_item": lowest_selling_sold_item,
@@ -1484,7 +1742,10 @@ def get_analytics_report(
             "product_demand_trend_keys": top_5_names,
             "frequent_combinations": frequent_combinations,
             "category_sales": category_sales,
+            "best_category_by_revenue": best_category_by_revenue,
+            "most_profitable_category": most_profitable_category,
             "counter_sales": counter_sales,
+            "canteen_sales": canteen_sales,
             "counter_performance": counter_performance,
             "payment_breakdown": payment_breakdown,
             "order_status_breakdown": order_status_breakdown,
@@ -1523,6 +1784,7 @@ def get_analytics_report(
                 1,
             ),
             "peak_hours": peak_hours,
+            "peak_hour_intel": peak_hour_intel,
         },
         "inventory": {
             "tracked_ingredients": len(inv_rows),
@@ -1540,6 +1802,7 @@ def get_analytics_report(
         "customers": {
             "registered_customers": int(total_customers),
             "new_customers": int(new_customers),
+            "new_customers_trends": new_customers_trends,
             "active_ordering_customers": active_cust_cnt,
             "returning_customers": returning_customers,
             "one_time_customers": one_time_customers,

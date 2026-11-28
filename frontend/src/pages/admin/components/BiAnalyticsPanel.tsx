@@ -124,7 +124,7 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
       }
     }, [biTheme]);
 
-    const [chartPeriod, setChartPeriod] = useState<"daily" | "weekly" | "monthly" | "hourly">("daily");
+    const [chartPeriod, setChartPeriod] = useState<"daily" | "weekly" | "monthly" | "yearly" | "hourly">("daily");
     const [productChartMode, setProductChartMode] = useState<"highest" | "lowest" | "all">("highest");
     const [productSearch, setProductSearch] = useState("");
     const [productSort, setProductSort] = useState<
@@ -195,6 +195,8 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
         ? report.sales?.weekly_series || []
         : chartPeriod === "monthly"
         ? report.sales?.monthly_series || []
+        : chartPeriod === "yearly"
+        ? report.sales?.yearly_series || []
         : chartPeriod === "hourly"
         ? (report.sales?.hourly_series || []).filter(
             (h: any) => h.orders > 0 || (Number(h.hour.slice(0, 2)) >= 7 && Number(h.hour.slice(0, 2)) <= 22)
@@ -206,6 +208,8 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
         ? "week"
         : chartPeriod === "monthly"
         ? "month"
+        : chartPeriod === "yearly"
+        ? "year"
         : chartPeriod === "hourly"
         ? "hour"
         : "date";
@@ -354,9 +358,9 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
 
     const sectionNav = [
       { id: "sec-overview", label: "1. Overview" },
-      { id: "sec-revenue", label: "2. Revenue" },
-      { id: "sec-orders", label: "3. Orders & Heatmap" },
-      { id: "sec-products", label: "4. Products & Combos" },
+      { id: "sec-revenue", label: "2. Revenue & AOV" },
+      { id: "sec-orders", label: "3. Orders & Peak Hours" },
+      { id: "sec-products", label: "4. Food & Menu" },
       { id: "sec-customers", label: "5. Customers" },
       { id: "sec-ops", label: "6. Operations & Waste" },
       { id: "sec-insights", label: "7. Business Insights" },
@@ -591,79 +595,203 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
 
         {/* ==================== SECTION 1: EXECUTIVE OVERVIEW ==================== */}
         <section id="sec-overview" className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
               <TrendingUp className="h-4 w-4 text-[#76010d]" /> 1. Executive Overview
             </h3>
-            <span className={`text-[11px] ${mutedText}`}>Click any metric card to drill down into underlying records</span>
+            <span className={`text-[11px] ${mutedText}`}>
+              {report.period_comparison
+                ? `Compared vs ${report.period_comparison.previous_range.start_date} to ${report.period_comparison.previous_range.end_date}`
+                : "Enable 'Compare previous period' above for period-over-period % changes • Click cards to drill down"}
+            </span>
           </div>
 
-          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
-            <Card
-              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
-              onClick={() => applyOrderDrilldown({ label: "Paid Orders" }, "orders")}
-            >
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Today's Revenue</div>
-              <div className="text-xl font-black text-[#76010d] mt-1">₹{report.today_summary?.revenue_today ?? "0.00"}</div>
-              <div className={`text-[11px] mt-0.5 ${mutedText}`}>{report.today_summary?.total_orders_today ?? 0} paid today</div>
-            </Card>
+          {(() => {
+            const pc = report.period_comparison;
+            const renderDelta = (pct: number | null | undefined, prevStr?: string) => {
+              if (!pc) return <span className={`text-[10px] ${mutedText}`}>No prior window comparison</span>;
+              if (pct === null || pct === undefined) {
+                return <span className={`text-[10px] ${mutedText}`}>{prevStr ? `Prior: ${prevStr}` : "No prior baseline"}</span>;
+              }
+              return (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold">
+                  <Badge tone={pct >= 0 ? "green" : "red"}>
+                    {pct >= 0 ? "+" : ""}
+                    {pct}%
+                  </Badge>
+                  {prevStr && <span className={mutedText}>vs {prevStr}</span>}
+                </span>
+              );
+            };
+            const topCatProfit = report.sales?.most_profitable_category;
+            const topCatRev = report.sales?.best_category_by_revenue;
+            return (
+              <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
+                  onClick={() => applyOrderDrilldown({ label: "Paid Revenue Orders" }, "orders")}
+                >
+                  <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Total Revenue</div>
+                  <div className="text-xl font-black text-[#76010d] mt-1">
+                    ₹{report.financial_analytics?.verified_net_revenue ?? report.sales?.net_sales ?? "0.00"}
+                  </div>
+                  <div className="mt-1">{renderDelta(pc?.revenue_change_percent, pc ? `₹${pc.previous_net_revenue}` : undefined)}</div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>Verified paid earnings in range</div>
+                </Card>
 
-            <Card
-              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
-              onClick={() => applyOrderDrilldown({ label: "Range Orders" }, "orders")}
-            >
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Total Orders (Range)</div>
-              <div className={`text-xl font-black mt-1 ${headingText}`}>{report.sales?.total_orders ?? 0}</div>
-              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
-                Created: {report.sales?.total_created_orders ?? report.sales?.total_orders ?? 0}
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
+                  onClick={() => applyOrderDrilldown({ label: "Paid Orders" }, "orders")}
+                >
+                  <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Today's Revenue</div>
+                  <div className="text-xl font-black text-[#76010d] mt-1">₹{report.today_summary?.revenue_today ?? "0.00"}</div>
+                  <div className="mt-1">
+                    <Badge tone="slate">{report.today_summary?.total_orders_today ?? 0} orders today</Badge>
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>Cash collected since midnight IST</div>
+                </Card>
+
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
+                  onClick={() => applyOrderDrilldown({ label: "Range Orders" }, "orders")}
+                >
+                  <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Total Orders</div>
+                  <div className={`text-xl font-black mt-1 ${headingText}`}>{report.sales?.total_orders ?? 0}</div>
+                  <div className="mt-1">{renderDelta(pc?.orders_change_percent, pc ? `${pc.previous_orders}` : undefined)}</div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>
+                    Created: {report.sales?.total_created_orders ?? report.sales?.total_orders ?? 0} total checkouts
+                  </div>
+                </Card>
+
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-emerald-400 transition ${cardCls}`}
+                  onClick={() => applyOrderDrilldown({ status: "COMPLETED", label: "Completed Orders" }, "orders")}
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Completed Orders</div>
+                  <div className="text-xl font-black text-emerald-600 mt-1">{report.operations?.completed_orders ?? 0}</div>
+                  <div className="mt-1">
+                    {renderDelta(pc?.completed_change_percent, pc ? `${pc.previous_completed_orders}` : undefined)}
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>
+                    {report.operations?.completion_rate_percent ?? 0}% handover completion rate
+                  </div>
+                </Card>
+
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-amber-400 transition ${cardCls}`}
+                  onClick={() => applyOrderDrilldown({ status: "PLACED", label: "Active Placed Orders" }, "orders")}
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Pending Orders</div>
+                  <div className="text-xl font-black text-amber-600 mt-1">{report.operations?.pending_orders ?? 0}</div>
+                  <div className="mt-1">
+                    {renderDelta(pc?.pending_change_percent, pc ? `${pc.previous_pending_orders}` : undefined)}
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>
+                    Live queue now: {report.today_summary?.active_pending_orders ?? 0} active
+                  </div>
+                </Card>
+
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-red-400 transition ${cardCls}`}
+                  onClick={() => applyOrderDrilldown({ status: "CANCELLED", label: "Cancelled & Rejected" }, "orders")}
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-red-600">Cancelled Orders</div>
+                  <div className="text-xl font-black text-red-600 mt-1">{report.operations?.cancelled_orders ?? 0}</div>
+                  <div className="mt-1 flex items-center gap-1 text-[10px]">
+                    <Badge tone={(report.operations?.cancellation_rate_percent ?? 0) >= 10 ? "red" : "slate"}>
+                      {report.operations?.cancellation_rate_percent ?? 0}% rate
+                    </Badge>
+                    {pc?.cancellation_rate_diff_points !== null && pc?.cancellation_rate_diff_points !== undefined && (
+                      <span className={mutedText}>
+                        ({pc.cancellation_rate_diff_points >= 0 ? "+" : ""}
+                        {pc.cancellation_rate_diff_points} pts)
+                      </span>
+                    )}
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>Unpaid drops &amp; rejections</div>
+                </Card>
+
+                <Card className={`p-3.5 ${cardCls}`}>
+                  <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Average Order Value</div>
+                  <div className={`text-xl font-black mt-1 ${headingText}`}>₹{report.sales?.average_order_value ?? "0.00"}</div>
+                  <div className="mt-1">{renderDelta(pc?.aov_change_percent, pc ? `₹${pc.previous_aov}` : undefined)}</div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>Typical spend per paid order</div>
+                </Card>
+
+                <Card className={`p-3.5 ${cardCls}`}>
+                  <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Active Customers</div>
+                  <div className={`text-xl font-black mt-1 ${headingText}`}>{report.customers?.active_ordering_customers ?? 0}</div>
+                  <div className="mt-1">
+                    {renderDelta(pc?.active_customers_change_percent, pc ? `${pc.previous_active_customers}` : undefined)}
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>
+                    {report.customers?.repeat_order_rate_percent ?? 0}% bought 2+ times
+                  </div>
+                </Card>
+
+                <Card
+                  className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-emerald-400 transition ${cardCls}`}
+                  onClick={() =>
+                    highestSelling?.food_item_id &&
+                    applyOrderDrilldown({ food_item_id: highestSelling.food_item_id, label: highestSelling.item_name }, "orders")
+                  }
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Best-Selling Item</div>
+                  <div className={`text-sm font-black mt-1 truncate ${headingText}`} title={highestSelling?.item_name || ""}>
+                    {highestSelling ? highestSelling.item_name : "No sales yet"}
+                  </div>
+                  <div className="mt-1">
+                    <Badge tone="green">
+                      {highestSelling ? `${highestSelling.quantity_sold} sold • ${highestSelling.revenue_share_percent ?? 0}% rev` : "0 units"}
+                    </Badge>
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>
+                    {highestSelling ? `₹${Number(highestSelling.revenue || 0).toFixed(2)} generated` : "Waiting for paid orders"}
+                  </div>
+                </Card>
+
+                <Card className={`p-3.5 ${cardCls}`}>
+                  <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>
+                    {topCatProfit ? "Most Profitable Category" : "Top Food Category"}
+                  </div>
+                  <div className={`text-sm font-black mt-1 truncate ${headingText}`}>
+                    {topCatProfit ? topCatProfit.category : topCatRev ? topCatRev.category : "Data unavailable"}
+                  </div>
+                  <div className="mt-1">
+                    {topCatProfit ? (
+                      <Badge tone="green">
+                        ₹{Number(topCatProfit.estimated_profit).toFixed(2)} profit ({topCatProfit.margin_percent ?? 0}%)
+                      </Badge>
+                    ) : topCatRev ? (
+                      <Badge tone="blue">{topCatRev.revenue_share_percent}% of revenue</Badge>
+                    ) : (
+                      <Badge tone="slate">No category sales</Badge>
+                    )}
+                  </div>
+                  <div className={`text-[10px] mt-1 ${mutedText}`}>
+                    {topCatProfit
+                      ? "From verified recipe & stock costs"
+                      : topCatRev
+                      ? `₹${Number(topCatRev.revenue).toFixed(2)} sales (add recipe costs for profit)`
+                      : "No confirmed category orders"}
+                  </div>
+                </Card>
               </div>
-            </Card>
+            );
+          })()}
 
-            <Card className={`p-3.5 ${cardCls}`}>
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Avg Order Value</div>
-              <div className={`text-xl font-black mt-1 ${headingText}`}>₹{report.sales?.average_order_value ?? "0.00"}</div>
-              <div className={`text-[11px] mt-0.5 ${mutedText}`}>Confirmed basket avg</div>
-            </Card>
-
-            <Card
-              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-amber-400 transition ${cardCls}`}
-              onClick={() => applyOrderDrilldown({ status: "PLACED", label: "Active Placed Orders" }, "orders")}
-            >
-              <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Active Orders</div>
-              <div className="text-xl font-black text-amber-600 mt-1">{report.today_summary?.active_pending_orders ?? 0}</div>
-              <div className={`text-[11px] mt-0.5 ${mutedText}`}>In kitchen / counter queue</div>
-            </Card>
-
-            <Card
-              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-emerald-400 transition ${cardCls}`}
-              onClick={() => applyOrderDrilldown({ status: "COMPLETED", label: "Completed Orders" }, "orders")}
-            >
-              <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Completed Orders</div>
-              <div className="text-xl font-black text-emerald-600 mt-1">{report.operations?.completed_orders ?? 0}</div>
-              <div className="text-[11px] text-emerald-600 mt-0.5">
-                {report.operations?.completion_rate_percent ?? 0}% completion
+          {(report.business_insights || []).length > 0 && (
+            <div className={`rounded-xl border px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs ${subtleBox}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="red">TOP INSIGHT</Badge>
+                <span className={`font-bold ${headingText}`}>{report.business_insights[0].title}</span>
+                <span className={mutedText}>— {report.business_insights[0].recommended_action}</span>
               </div>
-            </Card>
-
-            <Card
-              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-red-400 transition ${cardCls}`}
-              onClick={() => applyOrderDrilldown({ status: "CANCELLED", label: "Cancelled & Rejected" }, "orders")}
-            >
-              <div className="text-[10px] font-bold uppercase tracking-wide text-red-600">Cancellation Rate</div>
-              <div className="text-xl font-black text-red-600 mt-1">
-                {report.operations?.cancellation_rate_percent ?? 0}%
-              </div>
-              <div className={`text-[11px] mt-0.5 ${mutedText}`}>{report.operations?.cancelled_orders ?? 0} cancelled/rejected</div>
-            </Card>
-
-            <Card className={`p-3.5 ${cardCls}`}>
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Payment Success</div>
-              <div className={`text-xl font-black mt-1 ${headingText}`}>{report.payment_stats?.success_rate_percent ?? 0}%</div>
-              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
-                {report.payment_stats?.confirmed_count ?? 0} ok / {report.payment_stats?.failed_count ?? 0} failed
-              </div>
-            </Card>
-          </div>
+              <a href="#sec-insights" className="font-bold text-[#76010d] hover:underline whitespace-nowrap">
+                All Insights ({report.business_insights.length}) →
+              </a>
+            </div>
+          )}
         </section>
 
         {/* ==================== SECTION 2: REVENUE INTELLIGENCE ==================== */}
@@ -744,7 +872,7 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
                   Revenue Trend ({chartPeriod.charAt(0).toUpperCase() + chartPeriod.slice(1)})
                 </h4>
                 <div className="flex flex-wrap gap-1">
-                  {(["hourly", "daily", "weekly", "monthly"] as const).map((period) => (
+                  {(["hourly", "daily", "weekly", "monthly", "yearly"] as const).map((period) => (
                     <Button
                       key={period}
                       size="sm"
@@ -822,27 +950,131 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
               )}
             </Card>
           </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Average Order Value Trend Chart */}
+            <Card className={`p-4 ${cardCls}`}>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className={`font-bold text-sm ${headingText}`}>
+                  Average Order Value (AOV) Trend ({chartPeriod === "hourly" ? "Daily" : chartPeriod.charAt(0).toUpperCase() + chartPeriod.slice(1)})
+                </h4>
+                <span className={`text-[11px] font-semibold ${mutedText}`}>
+                  Overall AOV: ₹{report.sales?.average_order_value ?? "0.00"}
+                </span>
+              </div>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={
+                      chartPeriod === "weekly"
+                        ? report.sales?.weekly_series || []
+                        : chartPeriod === "monthly"
+                        ? report.sales?.monthly_series || []
+                        : chartPeriod === "yearly"
+                        ? report.sales?.yearly_series || []
+                        : report.sales?.daily_series || []
+                    }
+                  >
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey={
+                        chartPeriod === "weekly"
+                          ? "week"
+                          : chartPeriod === "monthly"
+                          ? "month"
+                          : chartPeriod === "yearly"
+                          ? "year"
+                          : "date"
+                      }
+                      tick={axisTick}
+                    />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => `₹${Number(v).toFixed(2)}`} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line
+                      isAnimationActive={false}
+                      type="monotone"
+                      dataKey="aov"
+                      name="Avg Order Value (₹)"
+                      stroke="#0f766e"
+                      strokeWidth={2.5}
+                      dot={{ r: 2.5 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
+            {/* Revenue by Cafeteria & Counter + Plain-English Revenue Takeaway */}
+            <Card className={`p-4 space-y-3 ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <h4 className={`font-bold text-sm ${headingText}`}>Revenue by Cafeteria &amp; Counter</h4>
+                <span className={`text-[10px] ${mutedText}`}>Contribution % of confirmed sales</span>
+              </div>
+              {(report.sales?.canteen_sales || []).length === 0 ? (
+                <div className={`text-xs py-6 text-center ${mutedText}`}>No cafeteria revenue recorded in this range.</div>
+              ) : (
+                <div className="space-y-2 text-xs">
+                  {(report.sales.canteen_sales || []).map((cn: any) => (
+                    <div key={cn.canteen} className={`rounded-xl border px-3 py-2 flex items-center justify-between ${subtleBox}`}>
+                      <div>
+                        <div className={`font-bold ${headingText}`}>{cn.canteen}</div>
+                        <div className={`text-[11px] ${mutedText}`}>{cn.orders} confirmed orders</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-black text-[#76010d]">₹{Number(cn.revenue || 0).toFixed(2)}</div>
+                        <Badge tone="green">{cn.revenue_share_percent ?? 0}% share</Badge>
+                      </div>
+                    </div>
+                  ))}
+                  {(report.sales?.counter_sales || []).length > 0 && (
+                    <div className="pt-1 flex flex-wrap gap-1.5">
+                      {(report.sales.counter_sales || []).map((ct: any) => (
+                        <Badge key={`${ct.canteen || ""}-${ct.counter}`} tone="slate">
+                          {ct.counter}: ₹{Number(ct.revenue || 0).toFixed(0)} ({ct.orders})
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {highestRevenue && (
+                <div className={`rounded-xl border px-3 py-2 text-[11px] ${subtleBox}`}>
+                  <span className="font-bold">Top Revenue Driver:</span> <b>{highestRevenue.item_name}</b> contributed{" "}
+                  <b>{highestRevenue.revenue_share_percent ?? 0}%</b> of range sales (₹{Number(highestRevenue.revenue || 0).toFixed(2)}).
+                </div>
+              )}
+            </Card>
+          </div>
         </section>
 
         {/* ==================== SECTION 3: ORDER INTELLIGENCE & HEATMAP ==================== */}
         <section id="sec-orders" className="space-y-3">
           <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
-            <ShoppingBag className="h-4 w-4 text-[#76010d]" /> 3. Order Intelligence &amp; Peak Hour Heatmap
+            <ShoppingBag className="h-4 w-4 text-[#76010d]" /> 3. Order &amp; Peak Hour Intelligence
           </h3>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
             <Card className={`p-3.5 ${cardCls}`}>
               <div className={mutedText}>Average Preparation Time</div>
-              <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.operations?.avg_prep_minutes ?? 0} min</div>
-              <div className={`text-[11px] ${mutedText}`}>Confirmed → Ready</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>
+                {report.operations?.has_prep_timestamps ? `${report.operations.avg_prep_minutes} min` : "Data unavailable"}
+              </div>
+              <div className={`text-[11px] ${mutedText}`}>
+                {report.operations?.has_prep_timestamps ? "Confirmed → Ready kitchen speed" : "No kitchen ready timestamps in window"}
+              </div>
             </Card>
             <Card className={`p-3.5 ${cardCls}`}>
               <div className={mutedText}>Average Fulfilment Time</div>
               <div className={`text-xl font-black mt-0.5 ${headingText}`}>
-                {report.operations?.avg_fulfilment_minutes ?? report.operations?.avg_completion_minutes ?? 0} min
+                {report.operations?.has_completion_timestamps
+                  ? `${report.operations?.avg_fulfilment_minutes ?? report.operations?.avg_completion_minutes ?? 0} min`
+                  : "Data unavailable"}
               </div>
               <div className={`text-[11px] ${mutedText}`}>
-                Pickup wait: {report.operations?.avg_pickup_wait_minutes ?? 0} min
+                {report.operations?.has_completion_timestamps
+                  ? `Pickup wait: ${report.operations?.avg_pickup_wait_minutes ?? 0} min`
+                  : "No handover completion timestamps yet"}
               </div>
             </Card>
             <Card
@@ -1051,6 +1283,98 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+            </Card>
+          </div>
+
+          {/* Peak Hour Intelligence & Staffing Card + Orders by Food Category */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className={`p-4 space-y-3 ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <h4 className={`font-bold text-sm flex items-center gap-1.5 ${headingText}`}>
+                  <Clock className="h-4 w-4 text-[#76010d]" /> Peak Hour Intelligence &amp; Staffing Guide
+                </h4>
+                {report.operations?.peak_hour_intel?.has_data && (
+                  <Badge tone="red">
+                    {report.operations.peak_hour_intel.peak_workload_share_percent ?? 0}% peak load
+                  </Badge>
+                )}
+              </div>
+              {!report.operations?.peak_hour_intel?.has_data ? (
+                <div className={`text-xs py-6 text-center ${mutedText}`}>
+                  No confirmed orders in this date window to compute peak rush intelligence.
+                </div>
+              ) : (
+                <div className="space-y-2.5 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <div className={`rounded-xl border p-2.5 ${subtleBox}`}>
+                      <div className={`text-[10px] font-bold uppercase ${mutedText}`}>Busiest 2h Window</div>
+                      <div className="text-sm font-black text-[#76010d] mt-0.5">
+                        {report.operations.peak_hour_intel.peak_window}
+                      </div>
+                      <div className={`text-[10px] ${mutedText}`}>
+                        {report.operations.peak_hour_intel.peak_window_orders} orders
+                      </div>
+                    </div>
+                    <div className={`rounded-xl border p-2.5 ${subtleBox}`}>
+                      <div className={`text-[10px] font-bold uppercase ${mutedText}`}>Highest Demand Day</div>
+                      <div className={`text-sm font-black mt-0.5 ${headingText}`}>
+                        {report.operations.peak_hour_intel.highest_demand_day?.weekday || "—"}
+                      </div>
+                      <div className={`text-[10px] ${mutedText}`}>
+                        {report.operations.peak_hour_intel.highest_demand_day?.orders ?? 0} orders
+                      </div>
+                    </div>
+                    <div className={`rounded-xl border p-2.5 ${subtleBox}`}>
+                      <div className={`text-[10px] font-bold uppercase ${mutedText}`}>Peak Prep Speed</div>
+                      <div className={`text-sm font-black mt-0.5 ${headingText}`}>
+                        {report.operations.peak_hour_intel.peak_avg_prep_minutes !== null &&
+                        report.operations.peak_hour_intel.peak_avg_prep_minutes !== undefined
+                          ? `${report.operations.peak_hour_intel.peak_avg_prep_minutes} min`
+                          : "Data unavailable"}
+                      </div>
+                      <div className={`text-[10px] ${mutedText}`}>
+                        Quiet day: {report.operations.peak_hour_intel.lowest_demand_day?.weekday || "—"} (
+                        {report.operations.peak_hour_intel.lowest_demand_day?.orders ?? 0})
+                      </div>
+                    </div>
+                  </div>
+                  {(report.operations.peak_hour_intel.lowest_demand_hours || []).length > 0 && (
+                    <div className={`text-[11px] ${mutedText}`}>
+                      <span className="font-bold">Lowest-demand campus hours:</span>{" "}
+                      {(report.operations.peak_hour_intel.lowest_demand_hours || [])
+                        .map((lh: any) => `${lh.hour} (${lh.orders})`)
+                        .join(" • ")}
+                    </div>
+                  )}
+                  <div className={`rounded-xl border px-3 py-2 text-[11px] ${subtleBox}`}>
+                    <span className="font-bold text-[#76010d]">Staffing Action:</span>{" "}
+                    {report.operations.peak_hour_intel.staffing_recommendation}
+                  </div>
+                </div>
+              )}
+            </Card>
+
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Orders &amp; Revenue by Food Category</h4>
+              {(report.sales?.category_sales || []).length === 0 ? (
+                <div className={`h-52 flex items-center justify-center text-xs ${mutedText}`}>
+                  No category orders recorded in this window.
+                </div>
+              ) : (
+                <div className="h-52">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={(report.sales?.category_sales || []).slice(0, 8)} layout="vertical" margin={{ left: 10, right: 16 }}>
+                      <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                      <XAxis type="number" tick={axisTick} />
+                      <YAxis type="category" dataKey="category" width={110} tick={axisTick} />
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar isAnimationActive={false} dataKey="order_count" name="Orders" fill="#76010d" radius={[0, 4, 4, 0]} />
+                      <Bar isAnimationActive={false} dataKey="quantity" name="Items Sold" fill="#0f766e" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </Card>
           </div>
         </section>
@@ -1482,6 +1806,53 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
               </div>
             </Card>
           </div>
+
+          <Card className={`p-4 space-y-2.5 ${cardCls}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className={`font-bold text-sm ${headingText}`}>Declining Sales Food Items (vs Prior Period)</h4>
+                <p className={`text-[11px] ${mutedText}`}>
+                  Dishes whose unit sales fell compared with the equivalent previous window — gentle prompts for pricing or visibility review
+                </p>
+              </div>
+              {!report.period_comparison && setReportComparePrevious && (
+                <Button size="sm" variant="outline" onClick={() => setReportComparePrevious(true)}>
+                  Enable Prior Period Comparison
+                </Button>
+              )}
+            </div>
+            {!report.period_comparison ? (
+              <div className={`text-xs ${mutedText}`}>
+                Turn on <b>Compare previous period</b> in the filter bar above to detect declining dishes automatically.
+              </div>
+            ) : (report.sales?.declining_items || []).length === 0 ? (
+              <div className={`text-xs ${mutedText}`}>No menu items recorded a sales decline compared with the previous period.</div>
+            ) : (
+              <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 text-xs">
+                {(report.sales.declining_items || []).map((di: any) => (
+                  <div
+                    key={di.item_name}
+                    onClick={() =>
+                      di.food_item_id &&
+                      applyOrderDrilldown({ food_item_id: di.food_item_id, label: `Declining: ${di.item_name}` }, "orders")
+                    }
+                    className={`rounded-xl border p-2.5 cursor-pointer hover:ring-1 hover:ring-amber-400 transition ${subtleBox}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`font-bold truncate ${headingText}`}>{di.item_name}</span>
+                      <Badge tone="red">{di.qty_change_percent}%</Badge>
+                    </div>
+                    <div className={`text-[11px] mt-1 ${mutedText}`}>
+                      Sold {di.current_quantity} vs {di.previous_quantity} prior ({di.qty_change} units)
+                    </div>
+                    <div className="text-[10px] mt-1 text-amber-700 dark:text-amber-300">
+                      Suggestion: Review portion quality, price, or home banner placement.
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
         </section>
 
         {/* ==================== SECTION 5: CUSTOMER INTELLIGENCE ==================== */}
@@ -1490,7 +1861,7 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
             <Users className="h-4 w-4 text-[#76010d]" /> 5. Customer Intelligence &amp; Satisfaction
           </h3>
 
-          <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 text-xs">
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 text-xs">
             <Card className={`p-3 ${cardCls}`}>
               <div className={mutedText}>Registered Customers</div>
               <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.customers?.registered_customers ?? 0}</div>
@@ -1512,6 +1883,10 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
               <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.customers?.repeat_order_rate_percent ?? 0}%</div>
             </Card>
             <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Avg Orders / Customer</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.customers?.avg_orders_per_customer ?? 0}</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
               <div className={mutedText}>Avg Customer Spend</div>
               <div className="text-xl font-black text-[#76010d] mt-0.5">₹{report.customers?.avg_customer_spending ?? "0.00"}</div>
             </Card>
@@ -1525,6 +1900,50 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Customer Growth Trend (New Signups)</h4>
+              {(report.customers?.new_customers_trends || []).length === 0 ? (
+                <div className={`h-48 flex items-center justify-center text-xs ${mutedText}`}>
+                  No customer signup dates available in this range.
+                </div>
+              ) : (
+                <div className="h-48">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={report.customers.new_customers_trends}>
+                      <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                      <XAxis dataKey="date" tick={axisTick} />
+                      <YAxis tick={axisTick} allowDecimals={false} />
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Area
+                        isAnimationActive={false}
+                        type="monotone"
+                        dataKey="new_customers"
+                        name="New Students"
+                        stroke="#2563eb"
+                        fill="#2563eb"
+                        fillOpacity={0.2}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Customer Ordering Frequency</h4>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={report.customers?.order_frequency_distribution || []}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="bucket" tick={axisTick} />
+                    <YAxis tick={axisTick} allowDecimals={false} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar isAnimationActive={false} dataKey="customers" name="Customers" fill="#76010d" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
             <Card className={`p-4 ${cardCls}`}>
               <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Customer Satisfaction Trend</h4>
               {(report.customers?.satisfaction_trends || []).length === 0 ? (
@@ -1702,13 +2121,15 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
           </div>
         </section>
 
-        {/* ==================== SECTION 7: ACTIONABLE BUSINESS INSIGHTS ==================== */}
+        {/* ==================== SECTION 7: BUSINESS INSIGHTS & RECOMMENDATIONS ==================== */}
         <section id="sec-insights" className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
-              <AlertTriangle className="h-4 w-4 text-[#76010d]" /> 7. Actionable Business Insights (Real DB Rules)
+              <AlertTriangle className="h-4 w-4 text-[#76010d]" /> 7. Business Insights &amp; Recommendations
             </h3>
-            <span className={`text-[11px] ${mutedText}`}>Computed directly from verified database thresholds — never fabricated</span>
+            <span className={`text-[11px] ${mutedText}`}>
+              Every insight explains What happened, Why it matters &amp; What to do next from live DB data
+            </span>
           </div>
           {(report.business_insights || []).length === 0 ? (
             <Card className={`p-4 text-xs ${cardCls} ${mutedText}`}>
@@ -1727,13 +2148,35 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
                     : "blue";
                 return (
                   <Card key={ins.id} className={`p-4 flex flex-col justify-between gap-3 ${cardCls}`}>
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <Badge tone={tone}>{ins.category.toUpperCase()}</Badge>
+                        <Badge tone={tone}>{ins.bi_domain || ins.category.toUpperCase()}</Badge>
                         <span className="text-[11px] font-black">{ins.metric_label}</span>
                       </div>
                       <div className={`font-extrabold text-sm ${headingText}`}>{ins.title}</div>
-                      <p className={`text-xs leading-relaxed ${mutedText}`}>{ins.detail}</p>
+                      {ins.time_period && (
+                        <div className={`text-[10px] font-mono ${mutedText}`}>Period: {ins.time_period}</div>
+                      )}
+                      <div className={`text-xs space-y-1.5 ${mutedText}`}>
+                        <div>
+                          <span className={`font-bold ${headingText}`}>What happened:</span> {ins.what_happened || ins.detail}
+                        </div>
+                        {ins.why_it_matters && (
+                          <div>
+                            <span className={`font-bold ${headingText}`}>Why it matters:</span> {ins.why_it_matters}
+                          </div>
+                        )}
+                        {ins.recommended_action && (
+                          <div className={`rounded-lg border px-2.5 py-1.5 ${subtleBox}`}>
+                            <span className="font-bold text-[#76010d]">Next action:</span> {ins.recommended_action}
+                          </div>
+                        )}
+                        {ins.supporting_data && (
+                          <div className="text-[11px]">
+                            <span className="font-semibold">Data:</span> {ins.supporting_data}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     {ins.drilldown && (
                       <button

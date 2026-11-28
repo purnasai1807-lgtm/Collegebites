@@ -236,7 +236,7 @@ export const AdminConsolePage: React.FC = () => {
 
       <div className="no-print flex flex-wrap gap-2">
         {[
-          { k: "analytics", l: "Enterprise BI Analytics" },
+          { k: "analytics", l: "Business Analytics & Insights" },
           { k: "control_center", l: "Control Center" },
           { k: "ai_forecast_assistant", l: "AI Forecasting & Assistant" },
           { k: "orders", l: "Orders & Users" },
@@ -248,13 +248,13 @@ export const AdminConsolePage: React.FC = () => {
           ...(isCollegeAdmin ? [{ k: "website_qr", l: "Website QR Generator" }] : []),
           { k: "queue", l: "Queue, Crowd & Slots" },
           { k: "staff", l: "Staff, Attendance & Tasks" },
-          { k: "promotions", l: "Offers, Campaigns & Banners" },
+          { k: "promotions", l: "Banners & Announcements" },
           { k: "support", l: "Support Tickets" },
           { k: "reconciliation", l: "Reconciliation" },
           { k: "security", l: "Security & Fraud" },
           ...(isCollegeAdmin ? [{ k: "backup", l: "Backups & DR" }] : []),
           { k: "network", l: offlinePendingCount > 0 ? `Network & Sync (${offlinePendingCount})` : "Network & Sync" },
-          ...(isCollegeAdmin ? [{ k: "system", l: "Settings, Reconcile & Audits" }] : []),
+          ...(isCollegeAdmin ? [{ k: "system", l: "Settings & Audits" }] : []),
         ].map((item) => (
           <Button
             key={item.k}

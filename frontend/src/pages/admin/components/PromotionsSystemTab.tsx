@@ -15,11 +15,6 @@ export const PromotionsTab: React.FC<{ activeCanteenId: string }> = ({ activeCan
     queryKey: ["admin-announcements"],
     queryFn: async () => (await api.get("/notifications/announcements")).data,
   });
-  const { data: campaignReport } = useQuery<any>({
-    queryKey: ["admin-campaigns", activeCanteenId],
-    queryFn: async () =>
-      (await api.get(`/promotions/campaigns/report${activeCanteenId ? `?canteen_id=${activeCanteenId}` : ""}`)).data,
-  });
 
   const [promoTitle, setPromoTitle] = useState("");
   const [promoSubtitle, setPromoSubtitle] = useState("");
@@ -29,40 +24,11 @@ export const PromotionsTab: React.FC<{ activeCanteenId: string }> = ({ activeCan
   const [annBody, setAnnBody] = useState("");
 
   return (
-    <div className="space-y-6">
-      {/* Pricing Policy & Historical Discount Archive (Read-Only) */}
-      <Card className="p-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="font-bold text-slate-900">Direct Listed Pricing Policy (Discounts &amp; Coupons Disabled)</h2>
-            <p className="text-xs text-slate-500">
-              All items are billed at exact listed prices inclusive of applicable statutory taxes. Promotional coupons, cart discounts, and loyalty discounts are permanently disabled.
-            </p>
-          </div>
-          <Badge tone="slate">Discounts Disabled</Badge>
-        </div>
-        {(campaignReport?.campaigns || []).length > 0 && (
-          <div className="space-y-2 pt-2 border-t border-slate-100">
-            <div className="text-xs font-bold text-slate-600">
-              Historical Archived Campaigns (Read-Only • Total Redemptions: {campaignReport?.total_redemptions ?? 0} • Historical Discount Given: ₹{campaignReport?.total_discount_given ?? "0.00"})
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 text-xs">
-              {(campaignReport?.campaigns || []).map((c: any) => (
-                <div key={c.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 flex justify-between items-start">
-                  <div>
-                    <div className="font-mono font-extrabold text-slate-700">{c.code}</div>
-                    <div className="font-bold text-slate-800">{c.title}</div>
-                    <div className="text-[11px] text-slate-500">
-                      Used: {c.redemptions_count} • Historical Discount: ₹{c.total_discount_given}
-                    </div>
-                  </div>
-                  <Badge tone="slate">Archived</Badge>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </Card>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-600">
+        <span>Listed-price billing enforced across all canteens; publish homepage highlight banners and campus announcements below.</span>
+        <Badge tone="slate">Listed Pricing Only</Badge>
+      </div>
 
       <div className="grid gap-6 md:grid-cols-2">
       <Card className="p-5 space-y-3">

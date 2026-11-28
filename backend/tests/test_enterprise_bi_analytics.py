@@ -233,11 +233,18 @@ def test_enterprise_bi_all_seven_sections_filters_drilldowns_and_cache_invalidat
     assert isinstance(bi["business_insights"], list)
     assert len(bi["business_insights"]) >= 1
     assert all(
-        "id" in ins and "drilldown" in ins and "what_happened" in ins and "recommended_action" in ins
+        "id" in ins and "drilldown" in ins and "what_happened" in ins and "recommended_action" in ins and "time_period" in ins
         for ins in bi["business_insights"]
     )
     assert "aov" in bi["sales"]["daily_series"][0]
+    assert len(bi["sales"]["yearly_series"]) >= 1
+    assert len(bi["sales"]["canteen_sales"]) >= 1
+    assert isinstance(bi["sales"]["declining_items"], list)
+    assert bi["sales"]["best_category_by_revenue"] is not None
+    assert bi["operations"]["peak_hour_intel"]["has_data"] is True
+    assert bi["operations"]["peak_hour_intel"]["peak_window"]
     assert "order_frequency_distribution" in bi["customers"]
+    assert len(bi["customers"]["new_customers_trends"]) >= 1
     assert "has_prep_timestamps" in bi["operations"]
 
     # 5. Date Presets & Custom Range Validation

@@ -49,6 +49,7 @@ const NavbarContent: React.FC = () => {
   const { user, accessToken, logout, selectedCanteenId, setSelectedCanteen } = useAppStore();
   const [notifOpen, setNotifOpen] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
+  const [opsMenuOpen, setOpsMenuOpen] = useState(false);
   const [notifPerm, setNotifPerm] = useState<string>(() =>
     typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
   );
@@ -195,94 +196,126 @@ const NavbarContent: React.FC = () => {
           <Link to="/support" className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
             Support
           </Link>
-          {isStaff(["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]) && (
-            <Link
-              to="/token-board"
-              className="inline-flex items-center gap-1 rounded-lg bg-[#fdf8f0] border border-[#76010d]/25 px-2.5 py-1.5 text-xs font-bold text-[#76010d] hover:bg-[#fdedce]"
-            >
-              <Tv className="h-3.5 w-3.5" /> Token Board
-            </Link>
-          )}
-
-          {isStaff(["kitchen_staff", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/kitchen"
-              className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
-            >
-              <ChefHat className="h-3.5 w-3.5" /> Kitchen
-            </Link>
-          )}
-          {isStaff(["cashier", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/cashier"
-              className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-800 hover:bg-sky-100"
-            >
-              <CreditCard className="h-3.5 w-3.5" /> Cashier POS
-            </Link>
-          )}
-          {isStaff(["pickup_staff", "cashier", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/pickup"
-              className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
-            >
-              <QrCode className="h-3.5 w-3.5" /> Pickup Scan
-            </Link>
-          )}
-          {isStaff(["inventory_manager", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/inventory"
-              className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2.5 py-1.5 text-xs font-semibold text-purple-800 hover:bg-purple-100"
-            >
-              <Package className="h-3.5 w-3.5" /> Inventory
-            </Link>
-          )}
-          {isStaff(["food_safety_inspector", "kitchen_staff", "inventory_manager", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/food-safety"
-              className="inline-flex items-center gap-1 rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-800 hover:bg-teal-100"
-            >
-              <ShieldCheck className="h-3.5 w-3.5" /> Food Safety
-            </Link>
-          )}
-          {isStaff(["food_safety_inspector", "kitchen_staff", "inventory_manager", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/assistant"
-              className="inline-flex items-center gap-1 rounded-lg bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
-            >
-              <Bot className="h-3.5 w-3.5" /> AI Ops
-            </Link>
-          )}
-          {isStaff(["canteen_manager", "college_admin"]) && (
-            <Link
-              to="/command-center"
-              className="inline-flex items-center gap-1 rounded-lg bg-[#76010d] px-2.5 py-1.5 text-xs font-bold text-white hover:bg-[#5d010a]"
-            >
-              <Bot className="h-3.5 w-3.5" /> Command Center
-            </Link>
-          )}
-          {isStaff(["canteen_manager", "college_admin"]) && (
-            <Link
-              to="/admin"
-              className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
-            >
-              <LayoutDashboard className="h-3.5 w-3.5" /> Admin
-            </Link>
-          )}
-          {isStaff(["kitchen_staff", "cashier", "pickup_staff", "inventory_manager", "food_safety_inspector", "canteen_manager", "college_admin"]) && (
-            <Link
-              to="/staff"
-              className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-200"
-            >
-              My Shifts
-            </Link>
-          )}
-          {college?.kiosk_enabled && (
-            <Link
-              to="/kiosk"
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              <Monitor className="h-3.5 w-3.5" /> Kiosk
-            </Link>
+          {isStaff(["canteen_manager", "college_admin"]) ? (
+            <>
+              <Link
+                to="/admin"
+                className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+              >
+                <LayoutDashboard className="h-3.5 w-3.5" /> Admin
+              </Link>
+              <Link
+                to="/command-center"
+                className="inline-flex items-center gap-1 rounded-lg bg-[#76010d] px-2.5 py-1.5 text-xs font-bold text-white hover:bg-[#5d010a]"
+              >
+                <Bot className="h-3.5 w-3.5" /> Command Center
+              </Link>
+              <Link
+                to="/kitchen"
+                className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+              >
+                <ChefHat className="h-3.5 w-3.5" /> Kitchen
+              </Link>
+              <Link
+                to="/cashier"
+                className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-800 hover:bg-sky-100"
+              >
+                <CreditCard className="h-3.5 w-3.5" /> Cashier POS
+              </Link>
+              <Link
+                to="/inventory"
+                className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2.5 py-1.5 text-xs font-semibold text-purple-800 hover:bg-purple-100"
+              >
+                <Package className="h-3.5 w-3.5" /> Inventory
+              </Link>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpsMenuOpen((o) => !o)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  More Ops ▾
+                </button>
+                {opsMenuOpen && (
+                  <div
+                    onMouseLeave={() => setOpsMenuOpen(false)}
+                    className="absolute right-0 mt-1.5 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg z-50 text-xs space-y-0.5"
+                  >
+                    <Link to="/token-board" onClick={() => setOpsMenuOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-slate-700 hover:bg-slate-100">
+                      <Tv className="h-3.5 w-3.5 text-[#76010d]" /> Token Board
+                    </Link>
+                    <Link to="/pickup" onClick={() => setOpsMenuOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-slate-700 hover:bg-slate-100">
+                      <QrCode className="h-3.5 w-3.5 text-emerald-700" /> Pickup Scan
+                    </Link>
+                    <Link to="/food-safety" onClick={() => setOpsMenuOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-slate-700 hover:bg-slate-100">
+                      <ShieldCheck className="h-3.5 w-3.5 text-teal-700" /> Food Safety
+                    </Link>
+                    <Link to="/assistant" onClick={() => setOpsMenuOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-slate-700 hover:bg-slate-100">
+                      <Bot className="h-3.5 w-3.5 text-indigo-700" /> AI Ops
+                    </Link>
+                    <Link to="/staff" onClick={() => setOpsMenuOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-slate-700 hover:bg-slate-100">
+                      My Shifts
+                    </Link>
+                    {college?.kiosk_enabled && (
+                      <Link to="/kiosk" onClick={() => setOpsMenuOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-slate-700 hover:bg-slate-100">
+                        <Monitor className="h-3.5 w-3.5" /> Kiosk Mode
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              {isStaff(["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]) && (
+                <Link
+                  to="/token-board"
+                  className="inline-flex items-center gap-1 rounded-lg bg-[#fdf8f0] border border-[#76010d]/25 px-2.5 py-1.5 text-xs font-bold text-[#76010d] hover:bg-[#fdedce]"
+                >
+                  <Tv className="h-3.5 w-3.5" /> Token Board
+                </Link>
+              )}
+              {isStaff(["kitchen_staff"]) && (
+                <Link to="/kitchen" className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100">
+                  <ChefHat className="h-3.5 w-3.5" /> Kitchen
+                </Link>
+              )}
+              {isStaff(["cashier"]) && (
+                <Link to="/cashier" className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-800 hover:bg-sky-100">
+                  <CreditCard className="h-3.5 w-3.5" /> Cashier POS
+                </Link>
+              )}
+              {isStaff(["pickup_staff", "cashier"]) && (
+                <Link to="/pickup" className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100">
+                  <QrCode className="h-3.5 w-3.5" /> Pickup Scan
+                </Link>
+              )}
+              {isStaff(["inventory_manager"]) && (
+                <Link to="/inventory" className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2.5 py-1.5 text-xs font-semibold text-purple-800 hover:bg-purple-100">
+                  <Package className="h-3.5 w-3.5" /> Inventory
+                </Link>
+              )}
+              {isStaff(["food_safety_inspector", "kitchen_staff", "inventory_manager"]) && (
+                <Link to="/food-safety" className="inline-flex items-center gap-1 rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-800 hover:bg-teal-100">
+                  <ShieldCheck className="h-3.5 w-3.5" /> Food Safety
+                </Link>
+              )}
+              {isStaff(["food_safety_inspector", "kitchen_staff", "inventory_manager"]) && (
+                <Link to="/assistant" className="inline-flex items-center gap-1 rounded-lg bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100">
+                  <Bot className="h-3.5 w-3.5" /> AI Ops
+                </Link>
+              )}
+              {isStaff(["kitchen_staff", "cashier", "pickup_staff", "inventory_manager", "food_safety_inspector"]) && (
+                <Link to="/staff" className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-200">
+                  My Shifts
+                </Link>
+              )}
+              {college?.kiosk_enabled && (
+                <Link to="/kiosk" className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                  <Monitor className="h-3.5 w-3.5" /> Kiosk
+                </Link>
+              )}
+            </>
           )}
         </nav>
 
