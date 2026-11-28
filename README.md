@@ -167,54 +167,55 @@ CollegeBites follows a modular application architecture.
 
 ## 👨‍💻 Project Team & Contributions
 
-### 1. Purna Sai Avvaru
+1. Purna Sai Avvaru
 
-**Team Lead | Full-Stack Developer | Complete Application Developer**
+Team Lead | Full-Stack Developer | Application Architect
+- Led the CollegeBites project from initial concept to implementation.
+- Designed and developed the complete application.
+- Developed and integrated the frontend and backend.
+- Designed and implemented REST APIs and application logic.
+- Managed database integration and data handling.
+- Integrated Razorpay payment gateway functionality.
+- Developed cafeteria food ordering and management workflows.
+- Implemented order management, token generation, and QR-based pickup functionality.
+- Worked on application security, performance, and reliability.
+- Managed overall project architecture, development, and module integration.
 
-- Led the CollegeBites project from concept to implementation.
-- Developed the complete application.
-- Designed and implemented the frontend.
-- Developed backend APIs and application logic.
-- Worked on database integration and management.
-- Integrated Razorpay payment functionality.
-- Developed cafeteria ordering and management workflows.
-- Implemented order management and QR-based pickup workflows.
-- Worked on application security and reliability.
-- Coordinated overall project development and integration.
+2. Harishini
 
-### 2. Srikar
+System Design | Data Analytics | Quality Assurance
+- Contributed to overall system design and architecture planning.
+- Designed and reviewed application workflows.
+- Assisted in identifying system requirements and functional structures.
+- Analyzed cafeteria operational data to identify patterns and trends.
+- Contributed to analytical reporting and dashboard insights.
+- Participated in functional and system testing.
+- Identified inconsistencies and suggested improvements.
+- Supported system reliability and usability improvements.
 
-**Deployment & Testing**
+3. Srikar
 
-- Contributed to application deployment activities.
-- Assisted with deployment configuration.
-- Performed application testing.
-- Helped identify bugs and functional issues.
-- Supported testing of application workflows.
-- Assisted in validating application functionality across different modules.
+Deployment & Quality Assurance Engineer
+- Managed and supported application deployment activities.
+- Assisted with hosting and deployment configurations.
+- Performed functional and integration testing.
+- Tested application workflows across different modules.
+- Identified, documented, and reported bugs.
+- Verified application functionality after deployment.
+- Assisted in troubleshooting deployment-related issues.
+- Supported application stability and release validation.
 
-### 3. Harishini
-Data Analytics | System Design | Testing
-- Contributed to system design and application workflow planning.
-- Assisted in designing and reviewing the overall system structure.
-- Contributed to data analytics and reporting activities.
-- Analyzed cafeteria operational data to identify meaningful patterns and trends.
-- Supported analytical insights for cafeteria operations.
-- Participated in application testing and functional validation.
-- Helped identify bugs, inconsistencies, and areas for improvement.
-- Supported improvements in system functionality, reliability, and performance.
+4. Shushath
 
-### 4. Shushath
-
-**Data Analytics & Testing**
-
-- Contributed to data analytics and reporting activities.
-- Assisted with analyzing order and transaction data.
-- Participated in testing application functionality.
-- Identified bugs and helped validate application workflows.
-- Assisted in verifying analytical results and dashboard functionality.
+Data Analytics & Quality Assurance Analyst
+- Worked on data analysis related to cafeteria orders and transactions.
+- Assisted in organizing and interpreting operational data.
+- Identified meaningful trends and patterns in order data.
+- Supported data validation and reporting activities.
+- Tested application functionality and individual modules.
+- Verified dashboard metrics and analytical results.
+- Identified bugs and inconsistencies during testing.
 - Supported overall application quality and reliability.
-
 ---
 
 ## 🚀 Project Vision
