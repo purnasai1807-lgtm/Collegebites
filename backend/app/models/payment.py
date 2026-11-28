@@ -194,9 +194,15 @@ class OrderHandoverRecord(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Receipt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "receipts"
-    __table_args__ = (UniqueConstraint("order_id", name="uq_receipts_order"),)
+    __table_args__ = (
+        UniqueConstraint("order_id", name="uq_receipts_order"),
+        Index("ix_receipts_user_created", "user_id", "created_at"),
+    )
 
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", name="fk_receipts_user_id", ondelete="SET NULL"), nullable=True, index=True
+    )
     receipt_number: Mapped[str] = mapped_column(String(48), nullable=False, unique=True)
     pickup_token_code: Mapped[str] = mapped_column(String(16), nullable=False)
     reprint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.http_cache import set_private_no_store
 from app.core.permissions import (
     ROLE_CANTEEN_MANAGER,
     ROLE_CASHIER,
@@ -18,8 +19,10 @@ from app.core.permissions import (
     ROLE_SUPER_ADMIN,
     AuthenticatedPrincipal,
     enforce_canteen_scope,
+    get_current_principal,
     get_optional_principal,
     require_roles,
+    scoped_counter_for_principal,
 )
 from app.core.security import generate_signed_qr_token
 from app.models.order import Order
@@ -48,14 +51,33 @@ def _staff_cid(principal: Optional[AuthenticatedPrincipal]) -> Optional[UUID]:
     return principal.assigned_canteen_id
 
 
+@router.get("/receipts/my")
+def list_my_receipts(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    set_private_no_store(response)
+    return receipt_service.list_my_receipts(
+        db,
+        user_id=principal.user.id,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.get("/receipts/{order_id_or_number}")
 def get_receipt(
     order_id_or_number: str,
+    response: Response,
     guest_token: Optional[str] = Query(default=None),
     x_guest_token: Optional[str] = Header(default=None),
     principal: Optional[AuthenticatedPrincipal] = Depends(get_optional_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     is_staff = bool(principal and principal.has_role(*STAFF_ROLES))
     return receipt_service.get_receipt_payload(
         db,
@@ -63,6 +85,7 @@ def get_receipt(
         user_id=principal.user.id if principal else None,
         is_staff=is_staff,
         staff_canteen_id=_staff_cid(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
         guest_access_token=guest_token or x_guest_token,
     )
 
@@ -86,12 +109,17 @@ def download_receipt_pdf(
         user_id=principal.user.id if principal else None,
         is_staff=is_staff,
         staff_canteen_id=_staff_cid(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
         guest_access_token=guest_token or x_guest_token,
     )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=CollegeBites-{order_num}.pdf"},
+        headers={
+            "Content-Disposition": f"attachment; filename=CollegeBites-{order_num}.pdf",
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -110,10 +138,15 @@ def download_order_qr_png(
         user_id=principal.user.id if principal else None,
         is_staff=is_staff,
         staff_canteen_id=_staff_cid(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
         guest_access_token=guest_token or x_guest_token,
     )
     png_bytes = render_qr_png_bytes(snap["qr_payload"], box_size=10)
-    return Response(content=png_bytes, media_type="image/png")
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 class RevokeOrderQRIn(BaseModel):

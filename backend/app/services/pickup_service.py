@@ -384,10 +384,15 @@ def _build_board_item_summaries(db: Session, order_ids: list[UUID]) -> dict[UUID
     return result
 
 
-def get_digital_token_board(db: Session, canteen_id: Optional[UUID] = None) -> DigitalBoardResponse:
-    """Publicly safe display board for TV/Monitor — preserves token sequence and never exposes PII."""
+def get_digital_token_board(
+    db: Session,
+    canteen_id: Optional[UUID] = None,
+    *,
+    counter_id: Optional[UUID] = None,
+) -> DigitalBoardResponse:
+    """Staff-only display board for kitchen/pickup monitors — never exposed without authorization."""
     cache_ns = f"{NS_BOARD}:{canteen_id}" if canteen_id is not None else NS_BOARD
-    cache_key = f"digital:{canteen_id or 'all'}"
+    cache_key = f"digital:{canteen_id or 'all'}:{counter_id or 'all'}"
     hit, cached = cache_manager.get_json(cache_ns, cache_key, l1_ttl=1.0)
     if hit and isinstance(cached, dict):
         return DigitalBoardResponse.model_validate(cached)
@@ -457,6 +462,9 @@ def get_digital_token_board(db: Session, canteen_id: Optional[UUID] = None) -> D
     if canteen_id is not None:
         active_stmt = active_stmt.where(Order.canteen_id == canteen_id)
         completed_stmt = completed_stmt.where(Order.canteen_id == canteen_id)
+    if counter_id is not None:
+        active_stmt = active_stmt.where(Order.counter_id == counter_id)
+        completed_stmt = completed_stmt.where(Order.counter_id == counter_id)
 
     active_rows = db.execute(active_stmt).all()
     completed_rows = db.execute(completed_stmt).all()
@@ -512,10 +520,15 @@ def get_digital_token_board(db: Session, canteen_id: Optional[UUID] = None) -> D
     return board_out
 
 
-def get_operational_token_board(db: Session, canteen_id: Optional[UUID] = None) -> OperationalTokenBoardResponse:
+def get_operational_token_board(
+    db: Session,
+    canteen_id: Optional[UUID] = None,
+    *,
+    counter_id: Optional[UUID] = None,
+) -> OperationalTokenBoardResponse:
     """Real-time 5-section operational Token Board for Canteen Managers, Kitchen & Pickup Staff."""
     cache_ns = f"{NS_BOARD}:{canteen_id}" if canteen_id is not None else NS_BOARD
-    cache_key = f"ops:{canteen_id or 'all'}"
+    cache_key = f"ops:{canteen_id or 'all'}:{counter_id or 'all'}"
     hit, cached = cache_manager.get_json(cache_ns, cache_key, l1_ttl=1.0)
     if hit and isinstance(cached, dict):
         return OperationalTokenBoardResponse.model_validate(cached)
@@ -594,6 +607,9 @@ def get_operational_token_board(db: Session, canteen_id: Optional[UUID] = None) 
     if canteen_id is not None:
         active_stmt = active_stmt.where(Order.canteen_id == canteen_id)
         completed_stmt = completed_stmt.where(Order.canteen_id == canteen_id)
+    if counter_id is not None:
+        active_stmt = active_stmt.where(Order.counter_id == counter_id)
+        completed_stmt = completed_stmt.where(Order.counter_id == counter_id)
 
     active_rows = db.execute(active_stmt).all()
     completed_rows = db.execute(completed_stmt).all()

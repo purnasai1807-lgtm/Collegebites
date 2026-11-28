@@ -83,6 +83,7 @@ def _create_paid_student_order(
 
 
 def test_realtime_board_simultaneous_orders_sequence_dedup_and_reconnect_catchup(client: TestClient):
+    admin = login_as(client, "admin@collegebites.edu", "Admin@12345")
     student = login_as(client, "student@collegebites.edu", "Student@12345")
     manager = login_as(client, "manager@collegebites.edu", "Staff@12345")
     kitchen = login_as(client, "kitchen@collegebites.edu", "Staff@12345")
@@ -105,8 +106,10 @@ def test_realtime_board_simultaneous_orders_sequence_dedup_and_reconnect_catchup
     assert all(tokens)
     assert len(tokens) == len(set(tokens)), f"Duplicate tokens generated: {tokens}"
 
-    # Verify board endpoints (single canteen & All Canteens) show all 4 in strict creation sequence without PII
-    board_single = client.get(f"/api/v1/pickup/board/{main_canteen['id']}")
+    # Verify staff-protected board endpoints (single canteen & All Canteens) show all 4 in strict creation sequence without PII
+    assert client.get(f"/api/v1/pickup/board/{main_canteen['id']}").status_code == 401
+    assert client.get(f"/api/v1/pickup/board/{main_canteen['id']}", headers=student["headers"]).status_code == 403
+    board_single = client.get(f"/api/v1/pickup/board/{main_canteen['id']}", headers=kitchen["headers"])
     assert board_single.status_code == 200
     snap_1 = board_single.json()
     assert snap_1["version"]
@@ -127,15 +130,26 @@ def test_realtime_board_simultaneous_orders_sequence_dedup_and_reconnect_catchup
     assert seq_nums == sorted(seq_nums)
 
     # All-Canteens endpoint
-    board_all = client.get("/api/v1/pickup/board")
+    board_all = client.get("/api/v1/pickup/board", headers=admin["headers"])
     assert board_all.status_code == 200
     assert board_all.json()["canteen_name"] == "All Campus Canteens"
     all_prep_tokens = [item["token_code"] for item in board_all.json()["now_preparing"]]
     for tok in tokens:
         assert tok in all_prep_tokens
 
-    # 2. Simulate SSE snapshot sync for two independent board viewers + deduplication when version unchanged
-    sse_v1 = client.get(f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true")
+    # 2. Simulate SSE snapshot sync for two independent staff board viewers + deduplication when version unchanged
+    assert client.get(f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true").status_code == 401
+    assert (
+        client.get(
+            f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true",
+            headers=student["headers"],
+        ).status_code
+        == 403
+    )
+    sse_v1 = client.get(
+        f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true",
+        headers=kitchen["headers"],
+    )
     assert sse_v1.status_code == 200
     assert "text/event-stream" in sse_v1.headers["content-type"]
     events_1 = _parse_sse_events(sse_v1.text)
@@ -144,8 +158,11 @@ def test_realtime_board_simultaneous_orders_sequence_dedup_and_reconnect_catchup
     ver_before = events_1[0]["id"]
     assert ver_before == events_1[0]["data"]["version"]
 
-    # Second concurrent viewer sees identical board version
-    sse_viewer2 = client.get(f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true")
+    # Second concurrent staff viewer sees identical board version
+    sse_viewer2 = client.get(
+        f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true",
+        headers=pickup["headers"],
+    )
     events_v2 = _parse_sse_events(sse_viewer2.text)
     assert events_v2[0]["id"] == ver_before
 
@@ -156,7 +173,7 @@ def test_realtime_board_simultaneous_orders_sequence_dedup_and_reconnect_catchup
     assert client.post(f"/api/v1/kitchen/orders/{o2['id']}/accept", headers=kitchen["headers"]).status_code == 200
     assert client.post(f"/api/v1/kitchen/orders/{o2['id']}/start-preparing", headers=kitchen["headers"]).status_code == 200
 
-    board_mid = client.get(f"/api/v1/pickup/board/{main_canteen['id']}").json()
+    board_mid = client.get(f"/api/v1/pickup/board/{main_canteen['id']}", headers=kitchen["headers"]).json()
     mid_tokens = [i["token_code"] for i in board_mid["now_preparing"]]
     assert mid_tokens.index(o1["pickup_token_code"]) < mid_tokens.index(o2["pickup_token_code"])
     o2_card = next(i for i in board_mid["now_preparing"] if i["token_code"] == o2["pickup_token_code"])
@@ -181,10 +198,10 @@ def test_realtime_board_simultaneous_orders_sequence_dedup_and_reconnect_catchup
     assert client.post(f"/api/v1/kitchen/orders/{o1['id']}/start-preparing", headers=manager["headers"]).status_code == 200
     assert client.post(f"/api/v1/kitchen/orders/{o2['id']}/mark-ready", headers=kitchen["headers"]).status_code == 200
 
-    # 5. Simulate disconnected client reconnecting with Last-Event-ID = ver_before -> receives missed catch-up snapshot
+    # 5. Simulate disconnected staff board client reconnecting with Last-Event-ID = ver_before -> receives missed catch-up snapshot
     sse_catchup = client.get(
         f"/api/v1/realtime/board/stream?canteen_id={main_canteen['id']}&once=true",
-        headers={"Last-Event-ID": ver_before},
+        headers={**pickup["headers"], "Last-Event-ID": ver_before},
     )
     assert sse_catchup.status_code == 200
     catchup_ev = _parse_sse_events(sse_catchup.text)[0]

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.cache import invalidate_reports
 from app.core.database import get_db
 from app.core.permissions import (
     ROLE_CANTEEN_MANAGER,
@@ -161,6 +162,7 @@ def create_review(
     _recompute_food_rating(db, food.id)
     db.commit()
     db.refresh(rev)
+    invalidate_reports(food.canteen_id)
     return rev
 
 
@@ -188,6 +190,7 @@ def moderate_review_visibility(
     )
     db.commit()
     db.refresh(rev)
+    invalidate_reports(rev.canteen_id)
     return rev
 
 
@@ -240,6 +243,7 @@ def create_ticket(
     )
     db.commit()
     db.refresh(ticket)
+    invalidate_reports(ticket.canteen_id)
     return _serialize_ticket(ticket)
 
 
@@ -399,6 +403,7 @@ def update_ticket_status(
     )
     db.commit()
     db.refresh(ticket)
+    invalidate_reports(ticket.canteen_id)
     return _serialize_ticket(ticket)
 
 
@@ -503,6 +508,7 @@ def assign_ticket(
         ticket.status = "assigned"
     db.commit()
     db.refresh(ticket)
+    invalidate_reports(ticket.canteen_id)
     return _serialize_ticket(ticket)
 
 
@@ -531,4 +537,5 @@ def resolve_ticket(
     record_audit_log(db, action="support.ticket_resolved", entity_type="support_ticket", entity_id=ticket.ticket_number, actor_user_id=principal.user.id)
     db.commit()
     db.refresh(ticket)
+    invalidate_reports(ticket.canteen_id)
     return _serialize_ticket(ticket)

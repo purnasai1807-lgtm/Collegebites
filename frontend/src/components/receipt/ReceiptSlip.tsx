@@ -40,16 +40,20 @@ export const ReceiptSlip: React.FC<ReceiptSlipProps> = ({
     }
   }, [autoPrintOnMount, receipt.order_number]);
 
-  const tokenQuery = guestToken ? `?guest_token=${encodeURIComponent(guestToken)}` : "";
+  const guestHeaders = guestToken ? { "X-Guest-Token": guestToken } : undefined;
 
   const handleBrowserPrint = async () => {
     setPrinting(true);
     try {
-      await api.post(`/printing/receipts/${receipt.order_number}/print${tokenQuery}`, {
-        printer_target: paperSize === "a4" ? "browser" : paperSize,
-        paper_width: paperSize,
-        is_reprint: receipt.reprint_count > 0,
-      });
+      await api.post(
+        `/printing/receipts/${receipt.order_number}/print`,
+        {
+          printer_target: paperSize === "a4" ? "browser" : paperSize,
+          paper_width: paperSize,
+          is_reprint: receipt.reprint_count > 0,
+        },
+        { headers: guestHeaders }
+      );
       setPrinterStatus("Print job logged • Opening system print dialog");
       onPrinted?.();
       setTimeout(() => window.print(), 150);
@@ -62,10 +66,9 @@ export const ReceiptSlip: React.FC<ReceiptSlipProps> = ({
 
   const handleDownloadPdf = async (format: "58mm" | "80mm" | "a4") => {
     try {
-      const sep = guestToken ? `&guest_token=${encodeURIComponent(guestToken)}` : "";
       const res = await api.get(
-        `/tokens/receipts/${receipt.order_number}/pdf?format=${format}&reprint=${receipt.is_reprint}${sep}`,
-        { responseType: "blob" }
+        `/tokens/receipts/${receipt.order_number}/pdf?format=${format}&reprint=${receipt.is_reprint}`,
+        { responseType: "blob", headers: guestHeaders }
       );
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
@@ -87,9 +90,8 @@ export const ReceiptSlip: React.FC<ReceiptSlipProps> = ({
     setPrinting(true);
     try {
       const escRes = await api.get(
-        `/printing/receipts/${receipt.order_number}/escpos?width=${paperSize === "58mm" ? "58mm" : "80mm"}${
-          guestToken ? `&guest_token=${encodeURIComponent(guestToken)}` : ""
-        }`
+        `/printing/receipts/${receipt.order_number}/escpos?width=${paperSize === "58mm" ? "58mm" : "80mm"}`,
+        { headers: guestHeaders }
       );
       const raw = Uint8Array.from(atob(escRes.data.escpos_base64), (c) => c.charCodeAt(0));
       if (nav.serial) {
@@ -109,11 +111,15 @@ export const ReceiptSlip: React.FC<ReceiptSlipProps> = ({
         if (ep) await device.transferOut(ep.endpointNumber, raw);
         await device.close();
       }
-      await api.post(`/printing/receipts/${receipt.order_number}/print${tokenQuery}`, {
-        printer_target: "usb",
-        paper_width: paperSize === "58mm" ? "58mm" : "80mm",
-        is_reprint: receipt.reprint_count > 0,
-      });
+      await api.post(
+        `/printing/receipts/${receipt.order_number}/print`,
+        {
+          printer_target: "usb",
+          paper_width: paperSize === "58mm" ? "58mm" : "80mm",
+          is_reprint: receipt.reprint_count > 0,
+        },
+        { headers: guestHeaders }
+      );
       setPrinterStatus("Sent ESC/POS payload to thermal printer");
       pushToast("Thermal receipt printed via ESC/POS!", "success");
       onPrinted?.();
@@ -128,11 +134,15 @@ export const ReceiptSlip: React.FC<ReceiptSlipProps> = ({
   const handleNetworkEscPos = async () => {
     setPrinting(true);
     try {
-      const res = await api.post(`/printing/receipts/${receipt.order_number}/print${tokenQuery}`, {
-        printer_target: "network_escpos",
-        paper_width: paperSize === "58mm" ? "58mm" : "80mm",
-        is_reprint: receipt.reprint_count > 0,
-      });
+      const res = await api.post(
+        `/printing/receipts/${receipt.order_number}/print`,
+        {
+          printer_target: "network_escpos",
+          paper_width: paperSize === "58mm" ? "58mm" : "80mm",
+          is_reprint: receipt.reprint_count > 0,
+        },
+        { headers: guestHeaders }
+      );
       if (res.data.status === "failed") {
         setLastFailedJobId(res.data.id);
         setPrinterStatus(`Failed: ${res.data.error_message}`);

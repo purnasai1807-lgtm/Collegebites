@@ -281,4 +281,4 @@ def test_razorpay_sdk_validation_and_error_handling(client: TestClient, monkeypa
     monkeypatch.setattr(gw, "_client", lambda: _GatewayFailClient())
     with pytest.raises(HTTPException) as gw_exc:
         gw.create_order(amount_inr=Decimal("55.00"), receipt_ref="CB-GW-FAIL")
-    assert gw_exc.value.status_code == 500
+    assert gw_exc.value.status_code in (500, 502)

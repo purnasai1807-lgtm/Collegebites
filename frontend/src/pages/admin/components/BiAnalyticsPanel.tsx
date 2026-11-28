@@ -1,4 +1,4 @@
-import React, { memo, useState } from "react";
+import React, { memo, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Area,
@@ -17,12 +17,32 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Download, Printer, Search } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowUpRight,
+  Clock,
+  Download,
+  FilterX,
+  Info,
+  Layers,
+  Moon,
+  PackageX,
+  Printer,
+  RefreshCw,
+  Search,
+  ShoppingBag,
+  Sparkles,
+  Sun,
+  TrendingUp,
+  Users,
+} from "lucide-react";
 import { api } from "../../../api/client";
 import { useDebouncedValue } from "../../../hooks/useDebouncedValue";
 import { Badge, Button, Card, Input } from "../../../components/ui/Primitives";
 
-const PIE_COLORS = ["#76010d", "#b45309", "#0f766e", "#1d4ed8", "#7c3aed", "#be123c"];
+const PIE_COLORS = ["#76010d", "#0f766e", "#1d4ed8", "#d97706", "#7c3aed", "#be123c"];
+const LINE_COLORS = ["#76010d", "#0f766e", "#2563eb", "#d97706", "#7c3aed"];
 
 interface BiAnalyticsPanelProps {
   report: any;
@@ -45,814 +65,1584 @@ interface BiAnalyticsPanelProps {
   menuItems?: any[];
   reportQueryCanteen: string;
   downloadBlob: (url: string, filename: string) => void;
+  onRefreshReport?: () => void;
+  refreshing?: boolean;
 }
 
-export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(({
-  report,
-  isCollegeAdmin,
-  scopeReportToCanteen,
-  setScopeReportToCanteen,
-  reportPreset,
-  setReportPreset,
-  reportStartDate,
-  setReportStartDate,
-  reportEndDate,
-  setReportEndDate,
-  reportCategoryId = "",
-  setReportCategoryId,
-  reportFoodItemId = "",
-  setReportFoodItemId,
-  reportComparePrevious = false,
-  setReportComparePrevious,
-  categories = [],
-  menuItems = [],
-  reportQueryCanteen,
-  downloadBlob,
-}) => {
-  const [chartPeriod, setChartPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
-  const [detailTab, setDetailTab] = useState<"orders" | "items" | "inventory">("orders");
-  const [detailSearch, setDetailSearch] = useState("");
-  const debouncedDetailSearch = useDebouncedValue(detailSearch, 300);
-  const [itemSortDir, setItemSortDir] = useState<"desc" | "asc">("desc");
-  const [lowOnly, setLowOnly] = useState(false);
-  const [page, setPage] = useState(1);
+interface DrilldownFilter {
+  status?: string;
+  hour?: number;
+  weekday?: number;
+  payment_method?: string;
+  food_item_id?: string;
+  delayed_only?: boolean;
+  label?: string;
+}
 
-  const detailParams = new URLSearchParams(reportQueryCanteen.startsWith("?") ? reportQueryCanteen.slice(1) : reportQueryCanteen);
-  detailParams.set("page", String(page));
-  detailParams.set("page_size", "10");
-  if (debouncedDetailSearch.trim()) detailParams.set("q", debouncedDetailSearch.trim());
-  if (detailTab === "items") detailParams.set("sort", itemSortDir);
-  if (detailTab === "inventory" && lowOnly) detailParams.set("low_only", "true");
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const HEATMAP_HOURS = Array.from({ length: 16 }, (_, i) => i + 7); // 07:00 .. 22:00
 
-  const { data: detailData } = useQuery<any>({
-    queryKey: ["bi-details", detailTab, detailParams.toString()],
-    staleTime: 15_000,
-    queryFn: async () => (await api.get(`/reports/details/${detailTab}?${detailParams.toString()}`)).data,
-  });
+export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
+  ({
+    report,
+    isCollegeAdmin,
+    scopeReportToCanteen,
+    setScopeReportToCanteen,
+    reportPreset,
+    setReportPreset,
+    reportStartDate,
+    setReportStartDate,
+    reportEndDate,
+    setReportEndDate,
+    reportCategoryId = "",
+    setReportCategoryId,
+    reportFoodItemId = "",
+    setReportFoodItemId,
+    reportComparePrevious = false,
+    setReportComparePrevious,
+    categories = [],
+    menuItems = [],
+    reportQueryCanteen,
+    downloadBlob,
+    onRefreshReport,
+    refreshing = false,
+  }) => {
+    const [biTheme, setBiTheme] = useState<"light" | "dark">(() => {
+      try {
+        return localStorage.getItem("collegebites_bi_theme") === "dark" ? "dark" : "light";
+      } catch {
+        return "light";
+      }
+    });
+    const isDark = biTheme === "dark";
 
-  const presets = [
-    { key: "today", label: "Today" },
-    { key: "yesterday", label: "Yesterday" },
-    { key: "last_7_days", label: "Last 7 Days" },
-    { key: "last_30_days", label: "Last 30 Days" },
-    { key: "this_month", label: "This Month" },
-    { key: "custom", label: "Custom" },
-  ];
+    useEffect(() => {
+      try {
+        localStorage.setItem("collegebites_bi_theme", biTheme);
+      } catch {
+        // ignore storage errors
+      }
+    }, [biTheme]);
 
-  const activeTrendData =
-    chartPeriod === "weekly"
-      ? report.sales.weekly_series || []
-      : chartPeriod === "monthly"
-      ? report.sales.monthly_series || []
-      : report.sales.daily_series || [];
+    const [chartPeriod, setChartPeriod] = useState<"daily" | "weekly" | "monthly" | "hourly">("daily");
+    const [showDefinitions, setShowDefinitions] = useState(false);
+    const [detailTab, setDetailTab] = useState<"orders" | "items" | "inventory">("orders");
+    const [detailSearch, setDetailSearch] = useState("");
+    const debouncedDetailSearch = useDebouncedValue(detailSearch, 300);
+    const [itemSortDir, setItemSortDir] = useState<"desc" | "asc">("desc");
+    const [lowOnly, setLowOnly] = useState(false);
+    const [drilldown, setDrilldown] = useState<DrilldownFilter>({});
+    const [page, setPage] = useState(1);
 
-  const nonEmptyHours = (report.sales.hourly_series || []).filter(
-    (h: any) => h.orders > 0 || (Number(h.hour.slice(0, 2)) >= 7 && Number(h.hour.slice(0, 2)) <= 22)
-  );
+    const drilldownSectionRef = useRef<HTMLDivElement | null>(null);
 
-  return (
-    <div className="space-y-5">
-      {/* Preset Bar + Date Range + Exports */}
-      <Card className="p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {presets.map((p) => (
-              <Button
-                key={p.key}
-                size="sm"
-                variant={reportPreset === p.key ? "secondary" : "outline"}
-                onClick={() => {
-                  setReportPreset(p.key);
-                  setPage(1);
-                  if (p.key !== "custom") {
-                    setReportStartDate("");
-                    setReportEndDate("");
-                  }
-                }}
-              >
-                {p.label}
-              </Button>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => downloadBlob(`/reports/export/xlsx${reportQueryCanteen}`, "collegebites-bi-report.xlsx")}
-            >
-              <Download className="h-3.5 w-3.5" /> Excel (.xlsx)
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => downloadBlob(`/reports/export/csv${reportQueryCanteen}`, "collegebites-report.csv")}
-            >
-              <Download className="h-3.5 w-3.5" /> CSV
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => downloadBlob(`/reports/export/pdf${reportQueryCanteen}`, "collegebites-report.pdf")}
-            >
-              <Download className="h-3.5 w-3.5" /> PDF
-            </Button>
-            <Button size="sm" variant="outline" className="no-print" onClick={() => window.print()}>
-              <Printer className="h-3.5 w-3.5" /> Print
-            </Button>
-          </div>
-        </div>
+    const applyOrderDrilldown = (filter: DrilldownFilter, targetTab: "orders" | "items" | "inventory" = "orders") => {
+      setDetailTab(targetTab);
+      setPage(1);
+      if (targetTab === "inventory") {
+        setLowOnly(true);
+        setDrilldown({});
+      } else {
+        setDrilldown(filter);
+      }
+      setTimeout(() => {
+        drilldownSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 60);
+    };
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-2.5 text-xs">
-          <div className="flex flex-wrap items-center gap-3">
-            {isCollegeAdmin ? (
-              <label className="flex items-center gap-2 font-semibold text-slate-600 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={scopeReportToCanteen}
-                  onChange={(e) => {
-                    setScopeReportToCanteen(e.target.checked);
-                    setPage(1);
-                  }}
-                />
-                Filter BI to selected canteen
-              </label>
-            ) : (
-              <span className="font-semibold text-slate-500">Scoped to assigned canteen</span>
-            )}
-            {setReportComparePrevious && (
-              <label className="flex items-center gap-1.5 font-semibold text-slate-600 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={reportComparePrevious}
-                  onChange={(e) => setReportComparePrevious(e.target.checked)}
-                />
-                Compare previous period
-              </label>
-            )}
-            {setReportCategoryId && categories.length > 0 && (
-              <select
-                value={reportCategoryId}
-                onChange={(e) => {
-                  setReportCategoryId(e.target.value);
-                  if (setReportFoodItemId) setReportFoodItemId("");
-                }}
-                aria-label="Filter by category"
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-              >
-                <option value="">All Categories</option>
-                {categories.map((c: any) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            )}
-            {setReportFoodItemId && menuItems.length > 0 && (
-              <select
-                value={reportFoodItemId}
-                onChange={(e) => setReportFoodItemId(e.target.value)}
-                aria-label="Filter by menu item"
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs max-w-[180px]"
-              >
-                <option value="">All Products</option>
-                {menuItems
-                  .filter((m: any) => !reportCategoryId || m.category_id === reportCategoryId)
-                  .map((m: any) => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
-                  ))}
-              </select>
-            )}
-            <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-mono text-slate-600">
-              Active Window: {report.range.start_date} to {report.range.end_date}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <input
-              type="date"
-              value={reportStartDate}
-              onChange={(e) => {
-                setReportPreset("custom");
-                setReportStartDate(e.target.value);
-                setPage(1);
-              }}
-              aria-label="Report start date"
-              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-            />
-            <span className="text-slate-400">to</span>
-            <input
-              type="date"
-              value={reportEndDate}
-              onChange={(e) => {
-                setReportPreset("custom");
-                setReportEndDate(e.target.value);
-                setPage(1);
-              }}
-              aria-label="Report end date"
-              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-            />
-          </div>
-        </div>
-      </Card>
+    const detailParams = new URLSearchParams(
+      reportQueryCanteen.startsWith("?") ? reportQueryCanteen.slice(1) : reportQueryCanteen
+    );
+    detailParams.set("page", String(page));
+    detailParams.set("page_size", "10");
+    if (debouncedDetailSearch.trim()) detailParams.set("q", debouncedDetailSearch.trim());
+    if (detailTab === "items") detailParams.set("sort", itemSortDir);
+    if (detailTab === "inventory" && lowOnly) detailParams.set("low_only", "true");
+    if (detailTab === "orders") {
+      if (drilldown.status) detailParams.set("status", drilldown.status);
+      if (drilldown.hour !== undefined) detailParams.set("hour", String(drilldown.hour));
+      if (drilldown.weekday !== undefined) detailParams.set("weekday", String(drilldown.weekday));
+      if (drilldown.payment_method) detailParams.set("payment_method", drilldown.payment_method);
+      if (drilldown.food_item_id) detailParams.set("food_item_id", drilldown.food_item_id);
+      if (drilldown.delayed_only) detailParams.set("delayed_only", "true");
+    }
 
-      {/* Today Snapshot */}
-      {report.today_summary && (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <Card className="p-4 border-[#76010d]/20 bg-[#76010d]/[0.03]">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Orders Today</div>
-            <div className="text-2xl font-black text-slate-900">{report.today_summary.total_orders_today}</div>
-            <div className="text-xs text-slate-500 mt-0.5">{report.today_summary.date}</div>
-          </Card>
-          <Card className="p-4 border-emerald-200 bg-emerald-50/40">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Completed Today</div>
-            <div className="text-2xl font-black text-emerald-900">{report.today_summary.completed_orders_today}</div>
-            <div className="text-xs text-emerald-700 mt-0.5">
-              Completion rate: {report.operations.completion_rate_percent ?? 0}%
-            </div>
-          </Card>
-          <Card className="p-4 border-amber-200 bg-amber-50/50">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-amber-800">Active Pending Queue</div>
-            <div className="text-2xl font-black text-amber-900">{report.today_summary.active_pending_orders}</div>
-            <div className="text-xs text-amber-700 mt-0.5">Today incl. unpaid: {report.today_summary.pending_orders_today}</div>
-          </Card>
-          <Card className="p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Sales Today</div>
-            <div className="text-2xl font-black text-[#76010d]">₹{report.today_summary.revenue_today}</div>
-            <div className="text-xs text-slate-500 mt-0.5">Confirmed revenue</div>
-          </Card>
-          <Card className="p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Payment Success</div>
-            <div className="text-2xl font-black text-slate-900">{report.payment_stats?.success_rate_percent ?? 0}%</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              {report.payment_stats?.confirmed_count ?? 0} ok / {report.payment_stats?.failed_count ?? 0} failed
-            </div>
-          </Card>
-        </div>
-      )}
+    const { data: detailData, isLoading: detailLoading, isError: detailError } = useQuery<any>({
+      queryKey: ["bi-details", detailTab, detailParams.toString()],
+      staleTime: 15_000,
+      queryFn: async () => (await api.get(`/reports/details/${detailTab}?${detailParams.toString()}`)).data,
+    });
 
-      {/* Financial Analytics: Strictly Separated Revenue vs Costs vs Estimated Gross Margin */}
-      {report.empty && (
-        <Card className="p-4 border-amber-200 bg-amber-50 text-xs font-semibold text-amber-900">
-          {report.empty_message || "No data available for the selected date range."}
-        </Card>
-      )}
+    const presets = [
+      { key: "today", label: "Today" },
+      { key: "yesterday", label: "Yesterday" },
+      { key: "last_7_days", label: "Last 7 Days" },
+      { key: "last_30_days", label: "Last 30 Days" },
+      { key: "this_month", label: "This Month" },
+      { key: "custom", label: "Custom" },
+    ];
 
-      {report.period_comparison && (
-        <Card className="p-3.5 border-blue-200 bg-blue-50/40 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div>
-            <span className="font-bold text-slate-900">Period Comparison</span>{" "}
-            <span className="text-slate-600">
-              vs {report.period_comparison.previous_range.start_date} to {report.period_comparison.previous_range.end_date}:
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-3 font-semibold">
-            <span>
-              Prev Orders: <strong>{report.period_comparison.previous_orders}</strong>{" "}
-              {report.period_comparison.orders_change_percent !== null && (
-                <Badge tone={report.period_comparison.orders_change_percent >= 0 ? "green" : "red"}>
-                  {report.period_comparison.orders_change_percent >= 0 ? "+" : ""}
-                  {report.period_comparison.orders_change_percent}%
-                </Badge>
-              )}
-            </span>
-            <span>
-              Prev Revenue: <strong>₹{report.period_comparison.previous_net_revenue}</strong>{" "}
-              {report.period_comparison.revenue_change_percent !== null && (
-                <Badge tone={report.period_comparison.revenue_change_percent >= 0 ? "green" : "red"}>
-                  {report.period_comparison.revenue_change_percent >= 0 ? "+" : ""}
-                  {report.period_comparison.revenue_change_percent}%
-                </Badge>
-              )}
-            </span>
-          </div>
-        </Card>
-      )}
+    const activeTrendData =
+      chartPeriod === "weekly"
+        ? report.sales?.weekly_series || []
+        : chartPeriod === "monthly"
+        ? report.sales?.monthly_series || []
+        : chartPeriod === "hourly"
+        ? (report.sales?.hourly_series || []).filter(
+            (h: any) => h.orders > 0 || (Number(h.hour.slice(0, 2)) >= 7 && Number(h.hour.slice(0, 2)) <= 22)
+          )
+        : report.sales?.daily_series || [];
 
-      {report.financial_analytics && (
-        <Card className="p-4 space-y-3 border-[#76010d]/20 bg-[#fdf8f0]/60">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="font-bold text-sm text-slate-900">
-              Financial Breakdown (Verified Revenue vs Direct Ingredient/Waste Costs)
-            </div>
-            <div className="flex gap-1.5">
-              <Badge tone="green">REVENUE: ACTUAL</Badge>
-              <Badge tone={report.financial_analytics.estimated_gross_margin !== null ? "blue" : "slate"}>
-                MARGIN: {(report.financial_analytics.margin_classification || "unavailable").toUpperCase()}
-              </Badge>
-            </div>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
-            <div className="rounded-xl bg-white border border-slate-200 p-3">
-              <div className="text-slate-500">Verified Net Revenue</div>
-              <div className="text-xl font-black text-[#76010d]">₹{report.financial_analytics.verified_net_revenue}</div>
-              <div className="text-[11px] text-slate-500">Gross: ₹{report.financial_analytics.verified_gross_sales}</div>
-            </div>
-            <div className="rounded-xl bg-white border border-slate-200 p-3">
-              <div className="text-slate-500">Verified Ingredient Cost</div>
-              <div className="text-xl font-black text-slate-900">₹{report.financial_analytics.verified_ingredient_cost}</div>
-              <div className="text-[11px] text-slate-500">From real stock movements</div>
-            </div>
-            <div className="rounded-xl bg-white border border-slate-200 p-3">
-              <div className="text-slate-500">Recorded Wastage Loss</div>
-              <div className="text-xl font-black text-red-700">₹{report.financial_analytics.recorded_wastage_loss}</div>
-              <div className="text-[11px] text-slate-500">Total direct costs: ₹{report.financial_analytics.total_recorded_direct_costs}</div>
-            </div>
-            <div className="rounded-xl bg-white border border-slate-200 p-3">
-              <div className="text-slate-500">Estimated Gross Margin</div>
-              <div className="text-xl font-black text-emerald-800">
-                {report.financial_analytics.estimated_gross_margin !== null
-                  ? `₹${report.financial_analytics.estimated_gross_margin} (${report.financial_analytics.estimated_gross_margin_percent}%)`
-                  : "Unavailable"}
+    const trendXKey =
+      chartPeriod === "weekly"
+        ? "week"
+        : chartPeriod === "monthly"
+        ? "month"
+        : chartPeriod === "hourly"
+        ? "hour"
+        : "date";
+
+    const nonEmptyHours = (report.sales?.hourly_series || []).filter(
+      (h: any) => h.orders > 0 || (Number(h.hour.slice(0, 2)) >= 7 && Number(h.hour.slice(0, 2)) <= 22)
+    );
+
+    const heatmapCells: any[] = report.sales?.hourly_heatmap || [];
+    const heatmapMax = Math.max(1, ...heatmapCells.map((c: any) => Number(c.orders || 0)));
+    const heatmapLookup = new Map<string, any>();
+    for (const c of heatmapCells) {
+      heatmapLookup.set(`${c.weekday_index}:${c.hour}`, c);
+    }
+
+    const topProductBarData = (report.sales?.top_items || []).slice(0, 8).map((t: any) => ({
+      ...t,
+      short_name: t.item_name.length > 16 ? `${t.item_name.slice(0, 15)}…` : t.item_name,
+    }));
+
+    const demandKeys: string[] = report.sales?.product_demand_trend_keys || [];
+    const demandSeries: any[] = report.sales?.product_demand_trends || [];
+
+    const ratingDistData = [5, 4, 3, 2, 1].map((star) => ({
+      star: `${star}★`,
+      count: Number(report.customers?.rating_distribution?.[String(star)] || 0),
+    }));
+
+    // Theme-aware surface & chart tokens
+    const shellCls = isDark
+      ? "rounded-3xl bg-slate-950 text-slate-100 p-4 sm:p-5 border border-slate-800 space-y-5"
+      : "space-y-5";
+    const cardCls = isDark
+      ? "bg-slate-900 border-slate-800 text-slate-100"
+      : "bg-white border-slate-200 text-slate-900";
+    const mutedText = isDark ? "text-slate-400" : "text-slate-500";
+    const headingText = isDark ? "text-white" : "text-slate-900";
+    const subtleBox = isDark ? "bg-slate-800/70 border-slate-700" : "bg-slate-50 border-slate-200";
+    const gridStroke = isDark ? "#334155" : "#e2e8f0";
+    const axisTick = { fontSize: 10, fill: isDark ? "#94a3b8" : "#64748b" };
+    const tooltipStyle = isDark
+      ? { backgroundColor: "#0f172a", borderColor: "#334155", color: "#f8fafc", borderRadius: 10, fontSize: 12 }
+      : { backgroundColor: "#ffffff", borderColor: "#e2e8f0", color: "#0f172a", borderRadius: 10, fontSize: 12 };
+
+    const activeDrilldownCount =
+      Number(Boolean(drilldown.status)) +
+      Number(drilldown.hour !== undefined) +
+      Number(drilldown.weekday !== undefined) +
+      Number(Boolean(drilldown.payment_method)) +
+      Number(Boolean(drilldown.food_item_id)) +
+      Number(Boolean(drilldown.delayed_only)) +
+      Number(lowOnly);
+
+    const formattedTimestamp = report.generated_at
+      ? new Date(report.generated_at).toLocaleString("en-IN", { timeZone: report.timezone || "Asia/Kolkata" })
+      : "Live";
+
+    const sectionNav = [
+      { id: "sec-overview", label: "1. Overview" },
+      { id: "sec-revenue", label: "2. Revenue" },
+      { id: "sec-orders", label: "3. Orders & Heatmap" },
+      { id: "sec-products", label: "4. Products & Combos" },
+      { id: "sec-customers", label: "5. Customers" },
+      { id: "sec-ops", label: "6. Operations & Waste" },
+      { id: "sec-insights", label: "7. Business Insights" },
+      { id: "sec-drilldown", label: "8. Drill-Down" },
+    ];
+
+    return (
+      <div className={shellCls}>
+        {/* Enterprise BI Control Bar + Section Jump Nav */}
+        <Card className={`p-4 space-y-3 ${cardCls}`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className={`text-base font-black tracking-tight ${headingText}`}>
+                  Enterprise Business Intelligence Console
+                </h2>
+                <Badge tone="green">ACTUAL DB METRICS</Badge>
+                <span className={`text-[11px] font-mono ${mutedText}`}>
+                  Updated: {formattedTimestamp} ({report.timezone || "Asia/Kolkata"})
+                </span>
               </div>
-              <div className="text-[11px] text-slate-500">
-                {report.financial_analytics.estimated_gross_margin !== null ? "Excludes overhead" : "Insufficient cost data"}
-              </div>
+              <p className={`text-[11px] mt-0.5 ${mutedText}`}>
+                {report.data_source || "Real-time SQL aggregation across verified orders, payments, inventory & reviews."}
+              </p>
             </div>
-          </div>
-          <div className="text-[11px] text-slate-600">{report.financial_analytics.margin_note}</div>
-        </Card>
-      )}
-
-      {/* Range KPIs */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="p-4">
-          <div className="text-xs text-slate-500">Confirmed Orders (Range)</div>
-          <div className="text-2xl font-black text-slate-900">{report.sales.total_orders}</div>
-          <div className="text-xs text-emerald-700 mt-1">
-            Completed: {report.operations.completed_orders} • Cancelled: {report.operations.cancelled_orders}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-slate-500">Net Sales Revenue</div>
-          <div className="text-2xl font-black text-[#76010d]">₹{report.sales.net_sales}</div>
-          <div className="text-xs text-slate-500 mt-1">
-            AOV: ₹{report.sales.average_order_value}
-            {Number(report.sales.tax_collected) > 0 ? ` • Historical Tax: ₹${report.sales.tax_collected}` : " • Tax-Inclusive Pricing"}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-slate-500">Prep &amp; Wait Times</div>
-          <div className="text-2xl font-black text-slate-900">{report.operations.avg_prep_minutes} min</div>
-          <div className="text-xs text-slate-500 mt-1">
-            Pickup wait: {report.operations.avg_pickup_wait_minutes} min • Delayed: {report.operations.delayed_orders}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-slate-500">Customers &amp; Support</div>
-          <div className="text-2xl font-black text-slate-900">{report.customers.repeat_order_rate_percent}%</div>
-          <div className="text-xs text-slate-500 mt-1">
-            Rating: ★ {report.customers.average_food_rating} • Open tickets: {report.support?.open_tickets ?? 0}
-          </div>
-        </Card>
-      </div>
-
-      {/* Charts Row 1: Revenue AreaChart + Hourly Throughput BarChart */}
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <h3 className="font-bold text-slate-900 text-sm">
-              {chartPeriod === "daily" ? "Daily" : chartPeriod === "weekly" ? "Weekly" : "Monthly"} Revenue &amp; Order Trend
-            </h3>
-            <div className="flex gap-1">
-              {(["daily", "weekly", "monthly"] as const).map((period) => (
-                <Button
-                  key={period}
-                  size="sm"
-                  variant={chartPeriod === period ? "secondary" : "outline"}
-                  onClick={() => setChartPeriod(period)}
-                >
-                  {period === "daily" ? "Daily" : period === "weekly" ? "Weekly" : "Monthly"}
+            <div className="flex flex-wrap items-center gap-2">
+              {onRefreshReport && (
+                <Button size="sm" variant="outline" onClick={onRefreshReport} disabled={refreshing}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
                 </Button>
-              ))}
-            </div>
-          </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={activeTrendData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey={chartPeriod === "weekly" ? "week" : chartPeriod === "monthly" ? "month" : "date"} tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Legend />
-                <Area isAnimationActive={false} type="monotone" dataKey="revenue" name="Revenue (₹)" stroke="#76010d" fill="#76010d" fillOpacity={0.18} />
-                <Area isAnimationActive={false} type="monotone" dataKey="orders" name="Orders" stroke="#0f766e" fill="#0f766e" fillOpacity={0.12} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <h3 className="font-bold text-slate-900 mb-3 text-sm">Hourly Order &amp; Completion Throughput</h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={nonEmptyHours}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Legend />
-                <Bar isAnimationActive={false} dataKey="orders" name="Paid Orders" fill="#76010d" radius={[4, 4, 0, 0]} />
-                <Bar isAnimationActive={false} dataKey="completed_orders" name="Completed" fill="#059669" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-      </div>
-
-      {/* Charts Row 2: Category PieChart + Inventory Consumption LineChart */}
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="p-5">
-          <h3 className="font-bold text-slate-900 mb-3 text-sm">Category Revenue Distribution</h3>
-          {(report.sales.category_sales || []).length === 0 ? (
-            <div className="h-60 flex items-center justify-center text-xs text-slate-400">
-              No category revenue data in selected date window.
-            </div>
-          ) : (
-            <div className="h-60">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    isAnimationActive={false}
-                    data={report.sales.category_sales}
-                    dataKey="revenue"
-                    nameKey="category"
-                    innerRadius={52}
-                    outerRadius={88}
-                    paddingAngle={2}
-                  >
-                    {(report.sales.category_sales || []).map((_entry: any, index: number) => (
-                      <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v: any) => `₹${Number(v).toFixed(2)}`} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Card>
-
-        <Card className="p-5">
-          <h3 className="font-bold text-slate-900 mb-3 text-sm">Inventory Consumption, Restock &amp; Wastage Trend</h3>
-          <div className="h-60">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={report.inventory?.consumption_trends || []}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line isAnimationActive={false} type="monotone" dataKey="consumed_qty" name="Consumed" stroke="#76010d" strokeWidth={2} dot={false} />
-                <Line isAnimationActive={false} type="monotone" dataKey="restocked_qty" name="Restocked" stroke="#059669" strokeWidth={2} dot={false} />
-                <Line isAnimationActive={false} type="monotone" dataKey="wastage_qty" name="Wasted" stroke="#d97706" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-      </div>
-
-      {/* Top Selling vs Least Ordered Food Items */}
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="p-5">
-          <h3 className="font-bold text-slate-900 mb-3 text-sm">Most Popular Dishes (Top 10)</h3>
-          <div className="space-y-2 text-xs">
-            {report.sales.top_items.length === 0 ? (
-              <div className="py-6 text-center text-slate-400">No dish sales recorded for selected range.</div>
-            ) : (
-              report.sales.top_items.slice(0, 10).map((ti: any) => (
-                <div key={ti.item_name} className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span className="font-bold text-slate-800">{ti.item_name}</span>
-                  <span>
-                    {ti.quantity_sold} sold • <strong>₹{Number(ti.revenue).toFixed(2)}</strong>
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <h3 className="font-bold text-slate-900 mb-3 text-sm">Least Ordered / Slow-Moving Items</h3>
-          <div className="space-y-2 text-xs">
-            {(report.sales.least_ordered_items || []).length === 0 ? (
-              <div className="py-6 text-center text-slate-400">No active menu items found.</div>
-            ) : (
-              (report.sales.least_ordered_items || []).slice(0, 10).map((li: any) => (
-                <div key={li.food_item_id} className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <div>
-                    <span className="font-bold text-slate-800">{li.item_name}</span>
-                    <span className="ml-2 text-[11px] text-slate-400">{li.category_name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={li.quantity_sold === 0 ? "amber" : "slate"}>{li.quantity_sold} sold</Badge>
-                    <span className="font-semibold text-slate-700">₹{Number(li.revenue).toFixed(2)}</span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
-      </div>
-
-      {/* Counter Utilization + Payment + Inventory Shortages + Staff Activity */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="p-4 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <div className="font-bold text-slate-900">Counter Performance &amp; Utilization</div>
-            <span className="text-slate-500">{(report.sales.counter_performance || []).length} active counters</span>
-          </div>
-          {(report.sales.counter_performance || []).length === 0 ? (
-            <div className="text-slate-400 py-4">No active counter metrics.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-[11px]">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500">
-                    <th className="py-1 pr-2">Counter</th>
-                    <th className="py-1 pr-2">Orders</th>
-                    <th className="py-1 pr-2">Revenue</th>
-                    <th className="py-1 pr-2">Avg Prep</th>
-                    <th className="py-1">Live Util</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {(report.sales.counter_performance || []).map((c: any) => (
-                    <tr key={c.counter_id}>
-                      <td className="py-1.5 pr-2 font-semibold text-slate-800">
-                        {c.counter_name} <span className="text-[10px] text-slate-400 uppercase">({c.counter_type})</span>
-                      </td>
-                      <td className="py-1.5 pr-2">{c.orders}</td>
-                      <td className="py-1.5 pr-2 font-semibold">₹{Number(c.revenue).toFixed(2)}</td>
-                      <td className="py-1.5 pr-2">{c.avg_prep_minutes}m</td>
-                      <td className="py-1.5">
-                        <Badge tone={c.utilization_percent >= 80 ? "red" : "green"}>{c.utilization_percent}%</Badge>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        <Card className="p-4 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <div className="font-bold text-slate-900">Staff &amp; Operations Activity</div>
-            <div className="text-sm font-black text-slate-900">{report.staff_performance?.cashier_walkin_orders ?? 0} Walk-in POS</div>
-          </div>
-          <div className="text-slate-500">
-            Check-ins: {report.staff_performance?.present_checkins ?? 0} • Leaves: {report.staff_performance?.leave_records ?? 0} • Tasks done:{" "}
-            {report.staff_performance?.tasks_completed ?? 0}/{report.staff_performance?.tasks_total ?? 0}
-          </div>
-          {(report.staff_performance?.staff_breakdown || []).length > 0 && (
-            <div className="overflow-x-auto pt-1">
-              <table className="w-full text-left text-[11px]">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500">
-                    <th className="py-1 pr-2">Staff</th>
-                    <th className="py-1 pr-2">Check-ins</th>
-                    <th className="py-1 pr-2">Tasks</th>
-                    <th className="py-1 pr-2">POS</th>
-                    <th className="py-1">Updates</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {(report.staff_performance.staff_breakdown || []).slice(0, 10).map((sb: any) => (
-                    <tr key={sb.user_id}>
-                      <td className="py-1 pr-2 font-semibold text-slate-800">{sb.full_name}</td>
-                      <td className="py-1 pr-2">{sb.checkins}</td>
-                      <td className="py-1 pr-2">
-                        {sb.tasks_completed}/{sb.tasks_total}
-                      </td>
-                      <td className="py-1 pr-2">{sb.cashier_orders}</td>
-                      <td className="py-1 font-semibold">{sb.status_updates}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-      </div>
-
-      {/* Low Stock Shortage Summary */}
-      <Card className="p-4 space-y-2 text-xs">
-        <div className="flex items-center justify-between">
-          <div className="font-bold text-slate-900">Inventory Shortage Alerts &amp; Wastage Loss</div>
-          <div className="text-sm font-black text-red-600">₹{report.inventory?.total_wastage_loss ?? "0.00"} loss</div>
-        </div>
-        <div className="text-slate-500">
-          Tracked (Active): {report.inventory?.tracked_ingredients ?? 0} • Low stock: {report.inventory?.low_stock_count ?? 0} • Expiring (7d):{" "}
-          {report.inventory?.expiring_within_7_days ?? 0} • Purchases: ₹{report.inventory?.total_purchases_received ?? "0.00"}
-        </div>
-        {(report.inventory?.low_stock_items || []).length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {(report.inventory.low_stock_items || []).slice(0, 10).map((item: any) => (
-              <Badge key={item.inventory_item_id} tone="red">
-                {item.ingredient_name}: {item.current_quantity}/{item.reorder_level} {item.unit}
-              </Badge>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {/* Searchable Paginated Detail Tables */}
-      <Card className="p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {[
-              { key: "orders", label: "Orders Drill-Down" },
-              { key: "items", label: "Menu Item Analytics" },
-              { key: "inventory", label: "Inventory Consumption" },
-            ].map((t) => (
-              <Button
-                key={t.key}
-                size="sm"
-                variant={detailTab === t.key ? "secondary" : "outline"}
-                onClick={() => {
-                  setDetailTab(t.key as any);
-                  setPage(1);
-                }}
-              >
-                {t.label}
+              )}
+              <Button size="sm" variant="outline" onClick={() => setShowDefinitions((s) => !s)}>
+                <Info className="h-3.5 w-3.5" /> Definitions
               </Button>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {detailTab === "items" && (
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  setItemSortDir((d) => (d === "desc" ? "asc" : "desc"));
-                  setPage(1);
-                }}
+                onClick={() => setBiTheme((t) => (t === "dark" ? "light" : "dark"))}
+                title="Switch BI Light/Dark Theme"
               >
-                Sort Qty: {itemSortDir === "desc" ? "High → Low" : "Low → High"}
+                {isDark ? <Sun className="h-3.5 w-3.5 text-amber-400" /> : <Moon className="h-3.5 w-3.5" />}
+                {isDark ? "Light BI" : "Dark BI"}
               </Button>
-            )}
-            {detailTab === "inventory" && (
-              <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={lowOnly}
-                  onChange={(e) => {
-                    setLowOnly(e.target.checked);
+            </div>
+          </div>
+
+          {showDefinitions && report.metric_definitions && (
+            <div className={`rounded-xl border p-3 text-[11px] grid gap-2 sm:grid-cols-2 ${subtleBox}`}>
+              {Object.entries(report.metric_definitions).map(([k, v]) => (
+                <div key={k}>
+                  <span className={`font-bold uppercase ${headingText}`}>{k.replace(/_/g, " ")}:</span>{" "}
+                  <span className={mutedText}>{String(v)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Presets & Exports */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/20 pt-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {presets.map((p) => (
+                <Button
+                  key={p.key}
+                  size="sm"
+                  variant={reportPreset === p.key ? "secondary" : "outline"}
+                  onClick={() => {
+                    setReportPreset(p.key);
                     setPage(1);
+                    if (p.key !== "custom") {
+                      setReportStartDate("");
+                      setReportEndDate("");
+                    }
                   }}
-                />
-                Low stock only
-              </label>
-            )}
-            <div className="relative">
-              <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-              <Input
-                value={detailSearch}
+                >
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => downloadBlob(`/reports/export/xlsx${reportQueryCanteen}`, "collegebites-bi-report.xlsx")}
+              >
+                <Download className="h-3.5 w-3.5" /> Excel (.xlsx)
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => downloadBlob(`/reports/export/csv${reportQueryCanteen}`, "collegebites-report.csv")}
+              >
+                <Download className="h-3.5 w-3.5" /> CSV
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => downloadBlob(`/reports/export/pdf${reportQueryCanteen}`, "collegebites-report.pdf")}
+              >
+                <Download className="h-3.5 w-3.5" /> PDF
+              </Button>
+              <Button size="sm" variant="outline" className="no-print" onClick={() => window.print()}>
+                <Printer className="h-3.5 w-3.5" /> Print
+              </Button>
+            </div>
+          </div>
+
+          {/* Scope, Category, Product, Compare, Custom Date */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/20 pt-2.5 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              {isCollegeAdmin ? (
+                <label className={`flex items-center gap-2 font-semibold cursor-pointer ${mutedText}`}>
+                  <input
+                    type="checkbox"
+                    checked={scopeReportToCanteen}
+                    onChange={(e) => {
+                      setScopeReportToCanteen(e.target.checked);
+                      setPage(1);
+                    }}
+                  />
+                  Filter BI to selected canteen
+                </label>
+              ) : (
+                <span className={`font-semibold ${mutedText}`}>Scoped to assigned canteen</span>
+              )}
+              {setReportComparePrevious && (
+                <label className={`flex items-center gap-1.5 font-semibold cursor-pointer ${mutedText}`}>
+                  <input
+                    type="checkbox"
+                    checked={reportComparePrevious}
+                    onChange={(e) => setReportComparePrevious(e.target.checked)}
+                  />
+                  Compare previous period
+                </label>
+              )}
+              {setReportCategoryId && categories.length > 0 && (
+                <select
+                  value={reportCategoryId}
+                  onChange={(e) => {
+                    setReportCategoryId(e.target.value);
+                    if (setReportFoodItemId) setReportFoodItemId("");
+                  }}
+                  aria-label="Filter by category"
+                  className={`rounded-lg border px-2 py-1 text-xs ${
+                    isDark ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-300 text-slate-900"
+                  }`}
+                >
+                  <option value="">All Categories</option>
+                  {categories.map((c: any) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {setReportFoodItemId && menuItems.length > 0 && (
+                <select
+                  value={reportFoodItemId}
+                  onChange={(e) => setReportFoodItemId(e.target.value)}
+                  aria-label="Filter by menu item"
+                  className={`rounded-lg border px-2 py-1 text-xs max-w-[180px] ${
+                    isDark ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-300 text-slate-900"
+                  }`}
+                >
+                  <option value="">All Products</option>
+                  {menuItems
+                    .filter((m: any) => !reportCategoryId || m.category_id === reportCategoryId)
+                    .map((m: any) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                </select>
+              )}
+              <span className={`rounded-md px-2 py-0.5 text-[11px] font-mono ${subtleBox}`}>
+                Window: {report.range.start_date} → {report.range.end_date}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                type="date"
+                value={reportStartDate}
                 onChange={(e) => {
-                  setDetailSearch(e.target.value);
+                  setReportPreset("custom");
+                  setReportStartDate(e.target.value);
                   setPage(1);
                 }}
-                placeholder="Search details..."
-                className="pl-8 w-52"
+                aria-label="Report start date"
+                className={`rounded-lg border px-2 py-1 text-xs ${
+                  isDark ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-300 text-slate-900"
+                }`}
+              />
+              <span className="text-slate-400">to</span>
+              <input
+                type="date"
+                value={reportEndDate}
+                onChange={(e) => {
+                  setReportPreset("custom");
+                  setReportEndDate(e.target.value);
+                  setPage(1);
+                }}
+                aria-label="Report end date"
+                className={`rounded-lg border px-2 py-1 text-xs ${
+                  isDark ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-300 text-slate-900"
+                }`}
               />
             </div>
           </div>
-        </div>
 
-        <div className="overflow-x-auto">
-          {detailTab === "orders" && (
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-[11px] uppercase text-slate-500">
-                  <th className="py-2 pr-3">Order / Token</th>
-                  <th className="py-2 pr-3">Customer</th>
-                  <th className="py-2 pr-3">Counter</th>
-                  <th className="py-2 pr-3">Status</th>
-                  <th className="py-2 pr-3">Method</th>
-                  <th className="py-2 pr-3">Prep / Wait</th>
-                  <th className="py-2 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {(detailData?.items || []).map((row: any) => (
-                  <tr key={row.order_id}>
-                    <td className="py-2 pr-3 font-bold text-slate-900">
-                      {row.order_number} {row.token_code ? `• ${row.token_code}` : ""}
-                    </td>
-                    <td className="py-2 pr-3">{row.customer_name}</td>
-                    <td className="py-2 pr-3">{row.counter_name}</td>
-                    <td className="py-2 pr-3">
-                      <Badge tone={row.status === "COMPLETED" ? "green" : row.status === "CANCELLED" ? "red" : "blue"}>
-                        {row.status}
-                      </Badge>
-                    </td>
-                    <td className="py-2 pr-3 uppercase text-[11px]">{row.payment_method}</td>
-                    <td className="py-2 pr-3 text-slate-500">
-                      {row.prep_minutes ?? "-"}m / {row.pickup_wait_minutes ?? "-"}m
-                    </td>
-                    <td className="py-2 text-right font-bold">₹{row.total_amount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {detailTab === "items" && (
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-[11px] uppercase text-slate-500">
-                  <th className="py-2 pr-3">Dish Name</th>
-                  <th className="py-2 pr-3">Category</th>
-                  <th className="py-2 pr-3">Unit Price</th>
-                  <th className="py-2 pr-3">Orders</th>
-                  <th className="py-2 pr-3">Qty Sold</th>
-                  <th className="py-2 pr-3">Revenue</th>
-                  <th className="py-2 text-right">Availability</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {(detailData?.items || []).map((row: any) => (
-                  <tr key={row.food_item_id}>
-                    <td className="py-2 pr-3 font-bold text-slate-900">{row.item_name}</td>
-                    <td className="py-2 pr-3 text-slate-600">{row.category_name}</td>
-                    <td className="py-2 pr-3">₹{row.unit_price}</td>
-                    <td className="py-2 pr-3">{row.order_count}</td>
-                    <td className="py-2 pr-3 font-bold">{row.quantity_sold}</td>
-                    <td className="py-2 pr-3 font-bold text-[#76010d]">₹{Number(row.revenue).toFixed(2)}</td>
-                    <td className="py-2 text-right">
-                      <Badge tone={row.is_available ? "green" : "amber"}>{row.is_available ? "Available" : "Unavailable"}</Badge>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {detailTab === "inventory" && (
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-[11px] uppercase text-slate-500">
-                  <th className="py-2 pr-3">Ingredient</th>
-                  <th className="py-2 pr-3">Consumed</th>
-                  <th className="py-2 pr-3">Restocked</th>
-                  <th className="py-2 pr-3">Wasted</th>
-                  <th className="py-2 pr-3">Current Stock</th>
-                  <th className="py-2 pr-3">Reorder Level</th>
-                  <th className="py-2 text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {(detailData?.items || []).map((row: any) => (
-                  <tr key={row.inventory_item_id}>
-                    <td className="py-2 pr-3 font-bold text-slate-900">{row.ingredient_name}</td>
-                    <td className="py-2 pr-3">
-                      {row.consumed_quantity} {row.unit}
-                    </td>
-                    <td className="py-2 pr-3 text-emerald-700">
-                      +{row.restocked_quantity} {row.unit}
-                    </td>
-                    <td className="py-2 pr-3 text-amber-700">
-                      {row.wastage_quantity} {row.unit}
-                    </td>
-                    <td className="py-2 pr-3 font-bold">
-                      {row.current_quantity} {row.unit}
-                    </td>
-                    <td className="py-2 pr-3">
-                      {row.reorder_level} {row.unit}
-                    </td>
-                    <td className="py-2 text-right">
-                      <Badge tone={row.is_low_stock ? "red" : "green"}>{row.is_low_stock ? "LOW STOCK" : "Healthy"}</Badge>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {(!detailData?.items || detailData.items.length === 0) && (
-            <div className="py-8 text-center text-xs text-slate-400">No detail rows match the current filter.</div>
-          )}
-        </div>
-
-        {/* Pagination Controls */}
-        <div className="flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-600">
-          <span>
-            Page <strong>{detailData?.page ?? page}</strong> of <strong>{detailData?.total_pages ?? 1}</strong> • Total{" "}
-            <strong>{detailData?.total ?? 0}</strong> records
-          </span>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-              Previous
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={page >= (detailData?.total_pages ?? 1)}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </Button>
+          {/* Section Quick-Jump Nav */}
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {sectionNav.map((s) => (
+              <a
+                key={s.id}
+                href={`#${s.id}`}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                  isDark
+                    ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                {s.label}
+              </a>
+            ))}
           </div>
+        </Card>
+
+        {report.empty && (
+          <Card className={`p-4 border-amber-300 text-xs font-semibold ${isDark ? "bg-amber-950/40 text-amber-200" : "bg-amber-50 text-amber-900"}`}>
+            {report.empty_message || "No confirmed orders available for the selected date range."}
+          </Card>
+        )}
+
+        {/* ==================== SECTION 1: EXECUTIVE OVERVIEW ==================== */}
+        <section id="sec-overview" className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+              <TrendingUp className="h-4 w-4 text-[#76010d]" /> 1. Executive Overview
+            </h3>
+            <span className={`text-[11px] ${mutedText}`}>Click any metric card to drill down into underlying records</span>
+          </div>
+
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
+              onClick={() => applyOrderDrilldown({ label: "Paid Orders" }, "orders")}
+            >
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Today's Revenue</div>
+              <div className="text-xl font-black text-[#76010d] mt-1">₹{report.today_summary?.revenue_today ?? "0.00"}</div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>{report.today_summary?.total_orders_today ?? 0} paid today</div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
+              onClick={() => applyOrderDrilldown({ label: "Range Orders" }, "orders")}
+            >
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Total Orders (Range)</div>
+              <div className={`text-xl font-black mt-1 ${headingText}`}>{report.sales?.total_orders ?? 0}</div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
+                Created: {report.sales?.total_created_orders ?? report.sales?.total_orders ?? 0}
+              </div>
+            </Card>
+
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Avg Order Value</div>
+              <div className={`text-xl font-black mt-1 ${headingText}`}>₹{report.sales?.average_order_value ?? "0.00"}</div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>Confirmed basket avg</div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-amber-400 transition ${cardCls}`}
+              onClick={() => applyOrderDrilldown({ status: "PLACED", label: "Active Placed Orders" }, "orders")}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Active Orders</div>
+              <div className="text-xl font-black text-amber-600 mt-1">{report.today_summary?.active_pending_orders ?? 0}</div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>In kitchen / counter queue</div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-emerald-400 transition ${cardCls}`}
+              onClick={() => applyOrderDrilldown({ status: "COMPLETED", label: "Completed Orders" }, "orders")}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Completed Orders</div>
+              <div className="text-xl font-black text-emerald-600 mt-1">{report.operations?.completed_orders ?? 0}</div>
+              <div className="text-[11px] text-emerald-600 mt-0.5">
+                {report.operations?.completion_rate_percent ?? 0}% completion
+              </div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-red-400 transition ${cardCls}`}
+              onClick={() => applyOrderDrilldown({ status: "CANCELLED", label: "Cancelled & Rejected" }, "orders")}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-red-600">Cancellation Rate</div>
+              <div className="text-xl font-black text-red-600 mt-1">
+                {report.operations?.cancellation_rate_percent ?? 0}%
+              </div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>{report.operations?.cancelled_orders ?? 0} cancelled/rejected</div>
+            </Card>
+
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${mutedText}`}>Payment Success</div>
+              <div className={`text-xl font-black mt-1 ${headingText}`}>{report.payment_stats?.success_rate_percent ?? 0}%</div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
+                {report.payment_stats?.confirmed_count ?? 0} ok / {report.payment_stats?.failed_count ?? 0} failed
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* ==================== SECTION 2: REVENUE INTELLIGENCE ==================== */}
+        <section id="sec-revenue" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+              <Layers className="h-4 w-4 text-[#76010d]" /> 2. Revenue Intelligence
+            </h3>
+            {report.period_comparison && (
+              <div className={`text-xs flex flex-wrap items-center gap-2 px-3 py-1 rounded-xl border ${subtleBox}`}>
+                <span className={mutedText}>
+                  vs {report.period_comparison.previous_range.start_date} to {report.period_comparison.previous_range.end_date}:
+                </span>
+                <span>
+                  Orders: <b>{report.period_comparison.previous_orders}</b>{" "}
+                  {report.period_comparison.orders_change_percent !== null && (
+                    <Badge tone={report.period_comparison.orders_change_percent >= 0 ? "green" : "red"}>
+                      {report.period_comparison.orders_change_percent >= 0 ? "+" : ""}
+                      {report.period_comparison.orders_change_percent}%
+                    </Badge>
+                  )}
+                </span>
+                <span>
+                  Net Rev: <b>₹{report.period_comparison.previous_net_revenue}</b>{" "}
+                  {report.period_comparison.revenue_change_percent !== null && (
+                    <Badge tone={report.period_comparison.revenue_change_percent >= 0 ? "green" : "red"}>
+                      {report.period_comparison.revenue_change_percent >= 0 ? "+" : ""}
+                      {report.period_comparison.revenue_change_percent}%
+                    </Badge>
+                  )}
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6 text-xs">
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Gross Sales</div>
+              <div className={`text-lg font-black mt-0.5 ${headingText}`}>₹{report.financial_analytics?.verified_gross_sales ?? report.sales?.gross_sales}</div>
+              <div className={`text-[10px] ${mutedText}`}>Confirmed subtotal</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Collected Payments</div>
+              <div className={`text-lg font-black mt-0.5 ${headingText}`}>₹{report.financial_analytics?.collected_payments ?? report.payment_stats?.confirmed_amount}</div>
+              <div className={`text-[10px] ${mutedText}`}>Gateway + POS confirmed</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Refunds</div>
+              <div className="text-lg font-black text-slate-500 mt-0.5">₹{report.financial_analytics?.refunds_amount ?? "0.00"}</div>
+              <div className={`text-[10px] ${mutedText}`}>No in-app refunds policy</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Net Revenue</div>
+              <div className="text-lg font-black text-[#76010d] mt-0.5">₹{report.financial_analytics?.verified_net_revenue ?? report.sales?.net_sales}</div>
+              <div className={`text-[10px] ${mutedText}`}>Excludes failed/unpaid</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Direct Stock + Waste Costs</div>
+              <div className={`text-lg font-black mt-0.5 ${headingText}`}>₹{report.financial_analytics?.total_recorded_direct_costs ?? "0.00"}</div>
+              <div className={`text-[10px] ${mutedText}`}>Ing: ₹{report.financial_analytics?.verified_ingredient_cost ?? "0.00"}</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Est. Gross Margin</div>
+              <div className="text-lg font-black text-emerald-600 mt-0.5">
+                {report.financial_analytics?.estimated_gross_margin !== null && report.financial_analytics?.estimated_gross_margin !== undefined
+                  ? `₹${report.financial_analytics.estimated_gross_margin} (${report.financial_analytics.estimated_gross_margin_percent}%)`
+                  : "Unavailable"}
+              </div>
+              <div className={`text-[10px] ${mutedText}`}>{(report.financial_analytics?.margin_classification || "unavailable").toUpperCase()}</div>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            {/* Revenue Trend LineChart */}
+            <Card className={`p-4 lg:col-span-2 ${cardCls}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h4 className={`font-bold text-sm ${headingText}`}>
+                  Revenue Trend ({chartPeriod.charAt(0).toUpperCase() + chartPeriod.slice(1)})
+                </h4>
+                <div className="flex flex-wrap gap-1">
+                  {(["hourly", "daily", "weekly", "monthly"] as const).map((period) => (
+                    <Button
+                      key={period}
+                      size="sm"
+                      variant={chartPeriod === period ? "secondary" : "outline"}
+                      onClick={() => setChartPeriod(period)}
+                    >
+                      {period.charAt(0).toUpperCase() + period.slice(1)}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={activeTrendData}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey={trendXKey} tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => `₹${Number(v).toFixed(2)}`} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line
+                      isAnimationActive={false}
+                      type="monotone"
+                      dataKey="revenue"
+                      name="Net Revenue (₹)"
+                      stroke="#76010d"
+                      strokeWidth={2.5}
+                      dot={{ r: 2.5 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
+            {/* Payment Method Donut Chart */}
+            <Card className={`p-4 ${cardCls}`}>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className={`font-bold text-sm ${headingText}`}>Payment Method Distribution</h4>
+                <span className={`text-[10px] ${mutedText}`}>Click slice to filter</span>
+              </div>
+              {(report.sales?.payment_breakdown || []).length === 0 ? (
+                <div className={`h-60 flex items-center justify-center text-xs ${mutedText}`}>
+                  No confirmed payment transactions in range.
+                </div>
+              ) : (
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        isAnimationActive={false}
+                        data={report.sales.payment_breakdown}
+                        dataKey="amount"
+                        nameKey="method"
+                        innerRadius={52}
+                        outerRadius={84}
+                        paddingAngle={3}
+                        onClick={(entry: any) => {
+                          if (entry?.method) {
+                            applyOrderDrilldown(
+                              { payment_method: entry.method, label: `Payment: ${entry.method.toUpperCase()}` },
+                              "orders"
+                            );
+                          }
+                        }}
+                        className="cursor-pointer"
+                      >
+                        {(report.sales.payment_breakdown || []).map((_e: any, index: number) => (
+                          <Cell key={`pay-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => `₹${Number(v).toFixed(2)}`} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+          </div>
+        </section>
+
+        {/* ==================== SECTION 3: ORDER INTELLIGENCE & HEATMAP ==================== */}
+        <section id="sec-orders" className="space-y-3">
+          <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+            <ShoppingBag className="h-4 w-4 text-[#76010d]" /> 3. Order Intelligence &amp; Peak Hour Heatmap
+          </h3>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Average Preparation Time</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.operations?.avg_prep_minutes ?? 0} min</div>
+              <div className={`text-[11px] ${mutedText}`}>Confirmed → Ready</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Average Fulfilment Time</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>
+                {report.operations?.avg_fulfilment_minutes ?? report.operations?.avg_completion_minutes ?? 0} min
+              </div>
+              <div className={`text-[11px] ${mutedText}`}>
+                Pickup wait: {report.operations?.avg_pickup_wait_minutes ?? 0} min
+              </div>
+            </Card>
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-amber-400 transition ${cardCls}`}
+              onClick={() => applyOrderDrilldown({ delayed_only: true, label: "Delayed Orders Only" }, "orders")}
+            >
+              <div className={mutedText}>Delayed Orders</div>
+              <div className="text-xl font-black text-amber-600 mt-0.5">{report.operations?.delayed_orders ?? 0}</div>
+              <div className={`text-[11px] ${mutedText}`}>Click to inspect delayed orders</div>
+            </Card>
+            <Card className={`p-3.5 ${cardCls}`}>
+              <div className={mutedText}>Order Status Distribution</div>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {(report.sales?.order_status_breakdown || []).map((st: any) => (
+                  <button
+                    key={st.status}
+                    type="button"
+                    onClick={() => applyOrderDrilldown({ status: st.status, label: `Status: ${st.status}` }, "orders")}
+                    className="rounded-md bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] font-bold hover:ring-1 hover:ring-[#76010d]"
+                  >
+                    {st.status}: {st.count}
+                  </button>
+                ))}
+                {(report.sales?.order_status_breakdown || []).length === 0 && (
+                  <span className={`text-[11px] ${mutedText}`}>No orders in window</span>
+                )}
+              </div>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Order Volume AreaChart */}
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Order Volume Trend (Completed vs Cancelled)</h4>
+              <div className="h-60">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={report.sales?.daily_series || []}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Area
+                      isAnimationActive={false}
+                      type="monotone"
+                      dataKey="orders"
+                      name="Paid Orders"
+                      stroke="#76010d"
+                      fill="#76010d"
+                      fillOpacity={0.18}
+                    />
+                    <Area
+                      isAnimationActive={false}
+                      type="monotone"
+                      dataKey="completed_orders"
+                      name="Completed"
+                      stroke="#059669"
+                      fill="#059669"
+                      fillOpacity={0.15}
+                    />
+                    <Area
+                      isAnimationActive={false}
+                      type="monotone"
+                      dataKey="cancelled_orders"
+                      name="Cancelled"
+                      stroke="#dc2626"
+                      fill="#dc2626"
+                      fillOpacity={0.12}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
+            {/* Weekday Demand BarChart */}
+            <Card className={`p-4 ${cardCls}`}>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className={`font-bold text-sm ${headingText}`}>Weekday Demand Distribution</h4>
+                <span className={`text-[10px] ${mutedText}`}>Click bar to inspect day</span>
+              </div>
+              <div className="h-60">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={report.sales?.weekday_series || []}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="weekday" tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Bar
+                      isAnimationActive={false}
+                      dataKey="orders"
+                      name="Paid Orders"
+                      fill="#76010d"
+                      radius={[4, 4, 0, 0]}
+                      className="cursor-pointer"
+                      onClick={(entry: any) => {
+                        if (entry?.weekday_index !== undefined) {
+                          applyOrderDrilldown(
+                            { weekday: entry.weekday_index, label: `Weekday: ${entry.weekday}` },
+                            "orders"
+                          );
+                        }
+                      }}
+                    />
+                    <Bar
+                      isAnimationActive={false}
+                      dataKey="completed_orders"
+                      name="Completed"
+                      fill="#0f766e"
+                      radius={[4, 4, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          </div>
+
+          {/* Peak Ordering Hours Heatmap + Hourly Throughput */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className={`p-4 space-y-3 ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <h4 className={`font-bold text-sm ${headingText}`}>Peak Ordering Hours Heatmap (Weekday × Hour)</h4>
+                <span className={`text-[10px] ${mutedText}`}>Click any cell to filter orders</span>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="min-w-[540px] space-y-1">
+                  <div className="grid grid-cols-[42px_repeat(16,minmax(0,1fr))] gap-1 text-[9px] font-mono text-center">
+                    <div />
+                    {HEATMAP_HOURS.map((hr) => (
+                      <div key={hr} className={mutedText}>
+                        {String(hr).padStart(2, "0")}h
+                      </div>
+                    ))}
+                  </div>
+                  {WEEKDAY_LABELS.map((wdName, wdIdx) => (
+                    <div key={wdName} className="grid grid-cols-[42px_repeat(16,minmax(0,1fr))] gap-1 items-center">
+                      <div className={`text-[10px] font-bold ${mutedText}`}>{wdName}</div>
+                      {HEATMAP_HOURS.map((hr) => {
+                        const cell = heatmapLookup.get(`${wdIdx}:${hr}`);
+                        const cnt = Number(cell?.orders || 0);
+                        const ratio = cnt / heatmapMax;
+                        const cellBg =
+                          cnt === 0
+                            ? isDark
+                              ? "bg-slate-800/70 text-slate-600"
+                              : "bg-slate-100 text-slate-300"
+                            : ratio >= 0.75
+                            ? "bg-[#76010d] text-white font-black"
+                            : ratio >= 0.45
+                            ? "bg-[#a31d29] text-white font-bold"
+                            : ratio >= 0.2
+                            ? "bg-amber-400/80 text-slate-950 font-bold"
+                            : "bg-emerald-200/80 text-emerald-950 font-semibold";
+                        return (
+                          <button
+                            key={hr}
+                            type="button"
+                            onClick={() => {
+                              if (cnt > 0) {
+                                applyOrderDrilldown(
+                                  { weekday: wdIdx, hour: hr, label: `${wdName} ${String(hr).padStart(2, "0")}:00` },
+                                  "orders"
+                                );
+                              }
+                            }}
+                            title={`${wdName} ${String(hr).padStart(2, "0")}:00 — ${cnt} orders (₹${Number(cell?.revenue || 0).toFixed(2)})`}
+                            className={`h-6 rounded text-[9px] flex items-center justify-center transition ${cellBg} ${
+                              cnt > 0 ? "cursor-pointer hover:ring-1 hover:ring-white" : "cursor-default"
+                            }`}
+                          >
+                            {cnt > 0 ? cnt : ""}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Card>
+
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Hourly Order Throughput</h4>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={nonEmptyHours}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="hour" tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Bar
+                      isAnimationActive={false}
+                      dataKey="orders"
+                      name="Paid Orders"
+                      fill="#76010d"
+                      radius={[4, 4, 0, 0]}
+                      className="cursor-pointer"
+                      onClick={(entry: any) => {
+                        if (entry?.hour) {
+                          const hrNum = Number(String(entry.hour).slice(0, 2));
+                          applyOrderDrilldown({ hour: hrNum, label: `Hour: ${entry.hour}` }, "orders");
+                        }
+                      }}
+                    />
+                    <Bar isAnimationActive={false} dataKey="completed_orders" name="Completed" fill="#059669" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* ==================== SECTION 4: PRODUCT INTELLIGENCE ==================== */}
+        <section id="sec-products" className="space-y-3">
+          <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+            <Sparkles className="h-4 w-4 text-[#76010d]" /> 4. Product Intelligence &amp; Basket Combinations
+          </h3>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Top Products BarChart */}
+            <Card className={`p-4 ${cardCls}`}>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className={`font-bold text-sm ${headingText}`}>Top Products Revenue vs Qty Sold</h4>
+                <span className={`text-[10px] ${mutedText}`}>Sorted by demand</span>
+              </div>
+              {topProductBarData.length === 0 ? (
+                <div className={`h-60 flex items-center justify-center text-xs ${mutedText}`}>
+                  No dish sales recorded for selected range.
+                </div>
+              ) : (
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topProductBarData} layout="vertical" margin={{ left: 10 }}>
+                      <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                      <XAxis type="number" tick={axisTick} />
+                      <YAxis type="category" dataKey="short_name" width={115} tick={axisTick} />
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar isAnimationActive={false} dataKey="revenue" name="Revenue (₹)" fill="#76010d" radius={[0, 4, 4, 0]} />
+                      <Bar isAnimationActive={false} dataKey="quantity_sold" name="Qty Sold" fill="#0f766e" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+
+            {/* Product Demand Trends Multi-Line */}
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Top 5 Product Demand Trends (Daily Units)</h4>
+              {demandKeys.length === 0 || demandSeries.length === 0 ? (
+                <div className={`h-64 flex items-center justify-center text-xs ${mutedText}`}>
+                  No daily product demand history in range.
+                </div>
+              ) : (
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={demandSeries}>
+                      <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                      <XAxis dataKey="date" tick={axisTick} />
+                      <YAxis tick={axisTick} />
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      {demandKeys.map((name, idx) => (
+                        <Line
+                          key={name}
+                          isAnimationActive={false}
+                          type="monotone"
+                          dataKey={name}
+                          stroke={LINE_COLORS[idx % LINE_COLORS.length]}
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            {/* Category Donut */}
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-2 ${headingText}`}>Category Revenue Mix</h4>
+              {(report.sales?.category_sales || []).length === 0 ? (
+                <div className={`h-52 flex items-center justify-center text-xs ${mutedText}`}>
+                  No category sales in range.
+                </div>
+              ) : (
+                <div className="h-52">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        isAnimationActive={false}
+                        data={report.sales.category_sales}
+                        dataKey="revenue"
+                        nameKey="category"
+                        innerRadius={45}
+                        outerRadius={76}
+                        paddingAngle={2}
+                      >
+                        {(report.sales.category_sales || []).map((_e: any, index: number) => (
+                          <Cell key={`cat-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => `₹${Number(v).toFixed(2)}`} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+
+            {/* Frequently Purchased Combinations */}
+            <Card className={`p-4 space-y-2 text-xs ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <h4 className={`font-bold text-sm ${headingText}`}>Frequently Purchased Combinations</h4>
+                <Badge tone="blue">Co-occurrence</Badge>
+              </div>
+              {(report.sales?.frequent_combinations || []).length === 0 ? (
+                <div className={`py-8 text-center ${mutedText}`}>
+                  Not enough multi-item orders in selected range to detect pairings.
+                </div>
+              ) : (
+                <div className="space-y-2 pt-1">
+                  {(report.sales.frequent_combinations || []).slice(0, 6).map((combo: any) => (
+                    <div key={combo.pair_label} className={`flex items-center justify-between rounded-lg border px-2.5 py-2 ${subtleBox}`}>
+                      <span className={`font-bold truncate pr-2 ${headingText}`}>{combo.pair_label}</span>
+                      <span className="shrink-0">
+                        <Badge tone="green">{combo.co_order_count} orders ({combo.support_percent}%)</Badge>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            {/* Low Performing / Slow-Moving Menu Items */}
+            <Card className={`p-4 space-y-2 text-xs ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <h4 className={`font-bold text-sm ${headingText}`}>Least-Selling / Slow Items</h4>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setItemSortDir("asc");
+                    applyOrderDrilldown({}, "items");
+                  }}
+                  className="text-[11px] font-bold text-[#76010d] hover:underline"
+                >
+                  View All →
+                </button>
+              </div>
+              <div className="space-y-1.5 pt-1">
+                {(report.sales?.least_ordered_items || []).slice(0, 6).map((li: any) => (
+                  <div
+                    key={li.food_item_id}
+                    onClick={() =>
+                      applyOrderDrilldown(
+                        { food_item_id: li.food_item_id, label: `Product: ${li.item_name}` },
+                        "orders"
+                      )
+                    }
+                    className={`flex items-center justify-between border-b pb-1.5 cursor-pointer hover:opacity-80 ${
+                      isDark ? "border-slate-800" : "border-slate-100"
+                    }`}
+                  >
+                    <div className="truncate pr-2">
+                      <span className={`font-bold ${headingText}`}>{li.item_name}</span>
+                      <span className={`ml-1.5 text-[10px] ${mutedText}`}>{li.category_name}</span>
+                    </div>
+                    <Badge tone={li.quantity_sold === 0 ? "amber" : "slate"}>{li.quantity_sold} sold</Badge>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* ==================== SECTION 5: CUSTOMER INTELLIGENCE ==================== */}
+        <section id="sec-customers" className="space-y-3">
+          <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+            <Users className="h-4 w-4 text-[#76010d]" /> 5. Customer Intelligence &amp; Satisfaction
+          </h3>
+
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 text-xs">
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Registered Customers</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.customers?.registered_customers ?? 0}</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Active Customers</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.customers?.active_ordering_customers ?? 0}</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>New Customers</div>
+              <div className="text-xl font-black text-blue-600 mt-0.5">{report.customers?.new_customers ?? 0}</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Returning Customers</div>
+              <div className="text-xl font-black text-emerald-600 mt-0.5">{report.customers?.returning_customers ?? 0}</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Repeat Purchase Rate</div>
+              <div className={`text-xl font-black mt-0.5 ${headingText}`}>{report.customers?.repeat_order_rate_percent ?? 0}%</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Avg Customer Spend</div>
+              <div className="text-xl font-black text-[#76010d] mt-0.5">₹{report.customers?.avg_customer_spending ?? "0.00"}</div>
+            </Card>
+            <Card className={`p-3 ${cardCls}`}>
+              <div className={mutedText}>Feedback Rating</div>
+              <div className="text-xl font-black text-amber-500 mt-0.5">
+                ★ {report.customers?.average_food_rating ?? 0}
+              </div>
+              <div className={`text-[10px] ${mutedText}`}>{report.customers?.review_count ?? 0} reviews</div>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Customer Satisfaction Trend</h4>
+              {(report.customers?.satisfaction_trends || []).length === 0 ? (
+                <div className={`h-48 flex items-center justify-center text-xs ${mutedText}`}>
+                  No customer review ratings submitted during this period.
+                </div>
+              ) : (
+                <div className="h-48">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={report.customers.satisfaction_trends}>
+                      <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                      <XAxis dataKey="date" tick={axisTick} />
+                      <YAxis domain={[0, 5]} tick={axisTick} />
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Line isAnimationActive={false} type="monotone" dataKey="avg_rating" name="Avg Rating (★)" stroke="#d97706" strokeWidth={2.5} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Rating Distribution (1★ – 5★)</h4>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={ratingDistData}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="star" tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar isAnimationActive={false} dataKey="count" name="Reviews" fill="#d97706" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* ==================== SECTION 6: OPERATIONAL INTELLIGENCE ==================== */}
+        <section id="sec-ops" className="space-y-3">
+          <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+            <Activity className="h-4 w-4 text-[#76010d]" /> 6. Operational, Kitchen, Stock &amp; Wastage Intelligence
+          </h3>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Preparation Time Trends */}
+            <Card className={`p-4 ${cardCls}`}>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className={`font-bold text-sm ${headingText}`}>Preparation &amp; Fulfilment Time Trends (min)</h4>
+                <Badge tone={(report.operations?.kitchen_workload_percent ?? 0) >= 80 ? "red" : "green"}>
+                  Kitchen Load: {report.operations?.kitchen_workload_percent ?? 0}%
+                </Badge>
+              </div>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={report.sales?.daily_series || []}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="avg_prep_minutes" name="Avg Prep (m)" stroke="#76010d" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="avg_fulfilment_minutes" name="Avg Fulfilment (m)" stroke="#2563eb" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
+            {/* Inventory Consumption, Restock & Wastage Trend */}
+            <Card className={`p-4 ${cardCls}`}>
+              <h4 className={`font-bold text-sm mb-3 ${headingText}`}>Inventory Consumption, Restock &amp; Wastage Trend</h4>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={report.inventory?.consumption_trends || []}>
+                    <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={axisTick} />
+                    <YAxis tick={axisTick} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="consumed_qty" name="Consumed" stroke="#76010d" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="restocked_qty" name="Restocked" stroke="#059669" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="wastage_qty" name="Wasted" stroke="#d97706" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3 text-xs">
+            {/* Counter Utilization */}
+            <Card className={`p-4 space-y-2 ${cardCls}`}>
+              <div className="font-bold text-sm">Two-Counter Performance</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[11px]">
+                  <thead>
+                    <tr className={`border-b ${isDark ? "border-slate-800 text-slate-400" : "border-slate-200 text-slate-500"}`}>
+                      <th className="py-1 pr-2">Counter</th>
+                      <th className="py-1 pr-2">Orders</th>
+                      <th className="py-1 pr-2">Revenue</th>
+                      <th className="py-1">Util</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y ${isDark ? "divide-slate-800" : "divide-slate-100"}`}>
+                    {(report.sales?.counter_performance || []).map((c: any) => (
+                      <tr key={c.counter_id}>
+                        <td className="py-1.5 pr-2 font-semibold">{c.counter_name}</td>
+                        <td className="py-1.5 pr-2">{c.orders}</td>
+                        <td className="py-1.5 pr-2 font-semibold">₹{Number(c.revenue).toFixed(2)}</td>
+                        <td className="py-1.5">
+                          <Badge tone={c.utilization_percent >= 80 ? "red" : "green"}>{c.utilization_percent}%</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Out-of-Stock Products & Low Stock Alerts */}
+            <Card className={`p-4 space-y-2 ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-sm flex items-center gap-1.5">
+                  <PackageX className="h-4 w-4 text-red-600" /> Stockouts &amp; Low Stock
+                </div>
+                <button
+                  type="button"
+                  onClick={() => applyOrderDrilldown({}, "inventory")}
+                  className="text-[11px] font-bold text-[#76010d] hover:underline"
+                >
+                  Inspect Stock →
+                </button>
+              </div>
+              <div className={mutedText}>
+                Low stock: <b>{report.inventory?.low_stock_count ?? 0}</b> • Out-of-stock dishes:{" "}
+                <b>{report.inventory?.out_of_stock_products_count ?? 0}</b> • Expiring 7d:{" "}
+                <b>{report.inventory?.expiring_within_7_days ?? 0}</b>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {(report.inventory?.low_stock_items || []).slice(0, 6).map((item: any) => (
+                  <Badge key={item.inventory_item_id} tone="red">
+                    {item.ingredient_name}: {item.current_quantity}/{item.reorder_level} {item.unit}
+                  </Badge>
+                ))}
+                {(report.inventory?.out_of_stock_products || []).slice(0, 5).map((p: any) => (
+                  <Badge key={p.food_item_id} tone="amber">
+                    {p.item_name} ({p.reason})
+                  </Badge>
+                ))}
+              </div>
+            </Card>
+
+            {/* Food Wastage Analytics */}
+            <Card className={`p-4 space-y-2 ${cardCls}`}>
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-sm">Food Wastage &amp; Staff Activity</div>
+                <span className="font-black text-red-600">₹{report.inventory?.total_wastage_loss ?? "0.00"}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                {Object.entries(report.inventory?.wastage_breakdown || {}).map(([k, v]: [string, any]) => (
+                  <div key={k} className={`rounded-lg border px-2 py-1.5 ${subtleBox}`}>
+                    <div className="uppercase text-[10px] font-bold">{k}</div>
+                    <div>
+                      {v.quantity} qty • ₹{v.loss_amount}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className={`text-[11px] pt-1 ${mutedText}`}>
+                Staff Check-ins: <b>{report.staff_performance?.present_checkins ?? 0}</b> • Tasks:{" "}
+                <b>
+                  {report.staff_performance?.tasks_completed ?? 0}/{report.staff_performance?.tasks_total ?? 0}
+                </b>
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* ==================== SECTION 7: ACTIONABLE BUSINESS INSIGHTS ==================== */}
+        <section id="sec-insights" className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+              <AlertTriangle className="h-4 w-4 text-[#76010d]" /> 7. Actionable Business Insights (Real DB Rules)
+            </h3>
+            <span className={`text-[11px] ${mutedText}`}>Computed directly from verified database thresholds — never fabricated</span>
+          </div>
+          {(report.business_insights || []).length === 0 ? (
+            <Card className={`p-4 text-xs ${cardCls} ${mutedText}`}>
+              No anomaly or threshold insights triggered for this date window.
+            </Card>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {(report.business_insights || []).map((ins: any) => {
+                const tone: "green" | "amber" | "red" | "blue" =
+                  ins.severity === "critical"
+                    ? "red"
+                    : ins.severity === "warning"
+                    ? "amber"
+                    : ins.severity === "positive"
+                    ? "green"
+                    : "blue";
+                return (
+                  <Card key={ins.id} className={`p-4 flex flex-col justify-between gap-3 ${cardCls}`}>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge tone={tone}>{ins.category.toUpperCase()}</Badge>
+                        <span className="text-[11px] font-black">{ins.metric_label}</span>
+                      </div>
+                      <div className={`font-extrabold text-sm ${headingText}`}>{ins.title}</div>
+                      <p className={`text-xs leading-relaxed ${mutedText}`}>{ins.detail}</p>
+                    </div>
+                    {ins.drilldown && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applyOrderDrilldown(
+                            {
+                              status: ins.drilldown.status,
+                              hour: ins.drilldown.hour,
+                              delayed_only: ins.drilldown.delayed_only,
+                              label: ins.title,
+                            },
+                            ins.drilldown.tab || "orders"
+                          )
+                        }
+                        className="inline-flex items-center gap-1 text-xs font-bold text-[#76010d] hover:underline self-start"
+                      >
+                        Inspect Records <ArrowUpRight className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* ==================== SECTION 8: INTERACTIVE DRILL-DOWN RECORDS ==================== */}
+        <div id="sec-drilldown" ref={drilldownSectionRef}>
+          <Card className={`p-5 space-y-4 ${cardCls}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[
+                  { key: "orders", label: "Orders Drill-Down" },
+                  { key: "items", label: "Menu Item Analytics" },
+                  { key: "inventory", label: "Inventory Consumption" },
+                ].map((t) => (
+                  <Button
+                    key={t.key}
+                    size="sm"
+                    variant={detailTab === t.key ? "secondary" : "outline"}
+                    onClick={() => {
+                      setDetailTab(t.key as any);
+                      setPage(1);
+                    }}
+                  >
+                    {t.label}
+                  </Button>
+                ))}
+                {activeDrilldownCount > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setDrilldown({});
+                      setLowOnly(false);
+                      setPage(1);
+                    }}
+                  >
+                    <FilterX className="h-3.5 w-3.5 text-red-600" /> Clear Drill-Down ({activeDrilldownCount})
+                  </Button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {detailTab === "items" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setItemSortDir((d) => (d === "desc" ? "asc" : "desc"));
+                      setPage(1);
+                    }}
+                  >
+                    Sort Qty: {itemSortDir === "desc" ? "High → Low" : "Low → High"}
+                  </Button>
+                )}
+                {detailTab === "inventory" && (
+                  <label className={`flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${mutedText}`}>
+                    <input
+                      type="checkbox"
+                      checked={lowOnly}
+                      onChange={(e) => {
+                        setLowOnly(e.target.checked);
+                        setPage(1);
+                      }}
+                    />
+                    Low stock only
+                  </label>
+                )}
+                <div className="relative">
+                  <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                  <Input
+                    value={detailSearch}
+                    onChange={(e) => {
+                      setDetailSearch(e.target.value);
+                      setPage(1);
+                    }}
+                    placeholder="Search records..."
+                    className="pl-8 w-52"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {activeDrilldownCount > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className={mutedText}>Active Drill-Down:</span>
+                {drilldown.label && <Badge tone="blue">{drilldown.label}</Badge>}
+                {drilldown.status && <Badge tone="red">Status: {drilldown.status}</Badge>}
+                {drilldown.weekday !== undefined && <Badge tone="blue">Day: {WEEKDAY_LABELS[drilldown.weekday]}</Badge>}
+                {drilldown.hour !== undefined && <Badge tone="blue">Hour: {String(drilldown.hour).padStart(2, "0")}:00</Badge>}
+                {drilldown.payment_method && <Badge tone="green">Method: {drilldown.payment_method.toUpperCase()}</Badge>}
+                {drilldown.delayed_only && <Badge tone="amber">Delayed Only</Badge>}
+                {lowOnly && <Badge tone="red">Low Stock Only</Badge>}
+              </div>
+            )}
+
+            {detailLoading ? (
+              <div className={`py-8 text-center text-xs ${mutedText}`}>
+                <Clock className="h-4 w-4 inline animate-spin mr-1.5" /> Loading database records...
+              </div>
+            ) : detailError ? (
+              <div className="py-6 text-center text-xs text-red-500">
+                Failed to load drill-down records for the current filter.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                {detailTab === "orders" && (
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className={`border-b text-[11px] uppercase ${isDark ? "border-slate-800 text-slate-400" : "border-slate-200 text-slate-500"}`}>
+                        <th className="py-2 pr-3">Order / Token</th>
+                        <th className="py-2 pr-3">Customer</th>
+                        <th className="py-2 pr-3">Counter</th>
+                        <th className="py-2 pr-3">Status</th>
+                        <th className="py-2 pr-3">Method</th>
+                        <th className="py-2 pr-3">Prep / Wait</th>
+                        <th className="py-2 text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className={`divide-y ${isDark ? "divide-slate-800" : "divide-slate-100"}`}>
+                      {(detailData?.items || []).map((row: any) => (
+                        <tr key={row.order_id}>
+                          <td className={`py-2 pr-3 font-bold ${headingText}`}>
+                            {row.order_number} {row.token_code ? `• ${row.token_code}` : ""}
+                          </td>
+                          <td className="py-2 pr-3">{row.customer_name}</td>
+                          <td className="py-2 pr-3">{row.counter_name}</td>
+                          <td className="py-2 pr-3">
+                            <Badge tone={row.status === "COMPLETED" ? "green" : row.status === "CANCELLED" ? "red" : "blue"}>
+                              {row.status}
+                            </Badge>
+                          </td>
+                          <td className="py-2 pr-3 uppercase text-[11px]">{row.payment_method}</td>
+                          <td className={`py-2 pr-3 ${mutedText}`}>
+                            {row.prep_minutes ?? "-"}m / {row.pickup_wait_minutes ?? "-"}m
+                          </td>
+                          <td className="py-2 text-right font-bold">₹{row.total_amount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                {detailTab === "items" && (
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className={`border-b text-[11px] uppercase ${isDark ? "border-slate-800 text-slate-400" : "border-slate-200 text-slate-500"}`}>
+                        <th className="py-2 pr-3">Dish Name</th>
+                        <th className="py-2 pr-3">Category</th>
+                        <th className="py-2 pr-3">Unit Price</th>
+                        <th className="py-2 pr-3">Orders</th>
+                        <th className="py-2 pr-3">Qty Sold</th>
+                        <th className="py-2 pr-3">Revenue</th>
+                        <th className="py-2 text-right">Availability</th>
+                      </tr>
+                    </thead>
+                    <tbody className={`divide-y ${isDark ? "divide-slate-800" : "divide-slate-100"}`}>
+                      {(detailData?.items || []).map((row: any) => (
+                        <tr key={row.food_item_id}>
+                          <td className={`py-2 pr-3 font-bold ${headingText}`}>{row.item_name}</td>
+                          <td className={`py-2 pr-3 ${mutedText}`}>{row.category_name}</td>
+                          <td className="py-2 pr-3">₹{row.unit_price}</td>
+                          <td className="py-2 pr-3">{row.order_count}</td>
+                          <td className="py-2 pr-3 font-bold">{row.quantity_sold}</td>
+                          <td className="py-2 pr-3 font-bold text-[#76010d]">₹{Number(row.revenue).toFixed(2)}</td>
+                          <td className="py-2 text-right">
+                            <Badge tone={row.is_available ? "green" : "amber"}>{row.is_available ? "Available" : "Unavailable"}</Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                {detailTab === "inventory" && (
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className={`border-b text-[11px] uppercase ${isDark ? "border-slate-800 text-slate-400" : "border-slate-200 text-slate-500"}`}>
+                        <th className="py-2 pr-3">Ingredient</th>
+                        <th className="py-2 pr-3">Consumed</th>
+                        <th className="py-2 pr-3">Restocked</th>
+                        <th className="py-2 pr-3">Wasted</th>
+                        <th className="py-2 pr-3">Current Stock</th>
+                        <th className="py-2 pr-3">Reorder Level</th>
+                        <th className="py-2 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className={`divide-y ${isDark ? "divide-slate-800" : "divide-slate-100"}`}>
+                      {(detailData?.items || []).map((row: any) => (
+                        <tr key={row.inventory_item_id}>
+                          <td className={`py-2 pr-3 font-bold ${headingText}`}>{row.ingredient_name}</td>
+                          <td className="py-2 pr-3">
+                            {row.consumed_quantity} {row.unit}
+                          </td>
+                          <td className="py-2 pr-3 text-emerald-600">
+                            +{row.restocked_quantity} {row.unit}
+                          </td>
+                          <td className="py-2 pr-3 text-amber-600">
+                            {row.wastage_quantity} {row.unit}
+                          </td>
+                          <td className="py-2 pr-3 font-bold">
+                            {row.current_quantity} {row.unit}
+                          </td>
+                          <td className="py-2 pr-3">
+                            {row.reorder_level} {row.unit}
+                          </td>
+                          <td className="py-2 text-right">
+                            <Badge tone={row.is_low_stock ? "red" : "green"}>{row.is_low_stock ? "LOW STOCK" : "Healthy"}</Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                {(!detailData?.items || detailData.items.length === 0) && (
+                  <div className={`py-8 text-center text-xs ${mutedText}`}>
+                    No detail rows match the current filter.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Pagination */}
+            <div className={`flex items-center justify-between border-t pt-3 text-xs ${isDark ? "border-slate-800 text-slate-400" : "border-slate-100 text-slate-600"}`}>
+              <span>
+                Page <strong>{detailData?.page ?? page}</strong> of <strong>{detailData?.total_pages ?? 1}</strong> • Total{" "}
+                <strong>{detailData?.total ?? 0}</strong> records
+              </span>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= (detailData?.total_pages ?? 1)}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          </Card>
         </div>
-      </Card>
-    </div>
-  );
-});
+      </div>
+    );
+  }
+);
 BiAnalyticsPanel.displayName = "BiAnalyticsPanel";

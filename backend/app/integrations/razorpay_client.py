@@ -22,13 +22,24 @@ class RazorpayGateway:
     Secrets (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) never leave the backend.
     """
 
+    def __init__(self) -> None:
+        self._use_live_api_override: Optional[bool] = None
+        self._key_id_override: Optional[str] = None
+        self._key_secret_override: Optional[str] = None
+
     @property
     def is_configured(self) -> bool:
         return bool(settings.RAZORPAY_KEY_ID.strip() and settings.RAZORPAY_KEY_SECRET.strip())
 
     @property
     def use_live_api(self) -> bool:
+        if self._use_live_api_override is not None:
+            return self._use_live_api_override
         return self.is_configured
+
+    @use_live_api.setter
+    def use_live_api(self, value: Optional[bool]) -> None:
+        self._use_live_api_override = value
 
     @property
     def public_key_id(self) -> Optional[str]:
@@ -36,6 +47,8 @@ class RazorpayGateway:
 
     @property
     def key_id(self) -> str:
+        if self._key_id_override is not None:
+            return self._key_id_override
         configured = settings.RAZORPAY_KEY_ID.strip()
         if configured:
             return configured
@@ -46,8 +59,14 @@ class RazorpayGateway:
             )
         return _LOCAL_TEST_KEY_ID
 
+    @key_id.setter
+    def key_id(self, value: Optional[str]) -> None:
+        self._key_id_override = value
+
     @property
     def key_secret(self) -> str:
+        if self._key_secret_override is not None:
+            return self._key_secret_override
         configured = settings.RAZORPAY_KEY_SECRET.strip()
         if configured:
             return configured
@@ -57,6 +76,10 @@ class RazorpayGateway:
                 detail="Razorpay payment gateway (RAZORPAY_KEY_SECRET) is not configured in production.",
             )
         return _LOCAL_TEST_KEY_SECRET
+
+    @key_secret.setter
+    def key_secret(self, value: Optional[str]) -> None:
+        self._key_secret_override = value
 
     @property
     def webhook_secret(self) -> str:
@@ -134,9 +157,21 @@ class RazorpayGateway:
     ) -> bool:
         if not (razorpay_order_id and razorpay_payment_id and razorpay_signature):
             return False
+        if self.use_live_api:
+            try:
+                self._client().utility.verify_payment_signature(
+                    {
+                        "razorpay_order_id": razorpay_order_id.strip(),
+                        "razorpay_payment_id": razorpay_payment_id.strip(),
+                        "razorpay_signature": razorpay_signature.strip(),
+                    }
+                )
+                return True
+            except razorpay.errors.SignatureVerificationError:
+                return False
         if settings.is_production and not self.is_configured:
             return False
-        secret = settings.RAZORPAY_KEY_SECRET.strip() or _LOCAL_TEST_KEY_SECRET
+        secret = self.key_secret
         msg = f"{razorpay_order_id.strip()}|{razorpay_payment_id.strip()}".encode("utf-8")
         expected = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, razorpay_signature.strip())

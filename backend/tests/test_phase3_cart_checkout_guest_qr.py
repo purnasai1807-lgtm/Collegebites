@@ -123,5 +123,5 @@ def test_cart_backend_pricing_no_coupons_and_guest_checkout_idempotency(client: 
     assert co_dup.json()["id"] == order["id"]
 
     # Unauthorized viewer cannot read guest order without guest_token
-    assert client.get(f"/api/v1/orders/{order['order_number']}").status_code == 403
+    assert client.get(f"/api/v1/orders/{order['order_number']}").status_code == 401
     assert client.get(f"/api/v1/orders/{order['order_number']}?guest_token={guest_token}").status_code == 200

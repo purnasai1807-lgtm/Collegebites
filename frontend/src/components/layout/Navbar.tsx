@@ -190,16 +190,10 @@ const NavbarContent: React.FC = () => {
             Campus Live &amp; Voice
           </Link>
           <Link to="/orders" className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
-            Orders
+            {user ? "My Orders & Receipts" : "My Receipts"}
           </Link>
           <Link to="/support" className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
             Support
-          </Link>
-          <Link
-            to="/board"
-            className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-          >
-            <Tv className="h-3.5 w-3.5" /> Pickup Display
           </Link>
           {isStaff(["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]) && (
             <Link

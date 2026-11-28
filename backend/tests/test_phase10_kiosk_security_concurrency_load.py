@@ -209,7 +209,8 @@ def test_section_34_full_end_to_end_acceptance_scenario(client: TestClient):
     assert client.post(f"/api/v1/kitchen/orders/{confirmed['id']}/start-preparing", headers=kitchen["headers"]).status_code == 200
     assert client.post(f"/api/v1/kitchen/orders/{confirmed['id']}/mark-ready", headers=kitchen["headers"]).status_code == 200
 
-    board = client.get(f"/api/v1/pickup/board/{canteen_id}").json()
+    assert client.get(f"/api/v1/pickup/board/{canteen_id}").status_code == 401
+    board = client.get(f"/api/v1/pickup/board/{canteen_id}", headers=pickup["headers"]).json()
     assert any(t["token_code"] == confirmed["pickup_token_code"] for t in board["ready_for_pickup"])
 
     # 21-25. Pickup staff scans QR -> backend verifies -> staff confirms handover -> COMPLETED

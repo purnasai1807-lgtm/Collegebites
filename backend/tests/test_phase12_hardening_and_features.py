@@ -703,6 +703,11 @@ def test_inventory_fefo_transfers_staff_leave_support_guest_and_ws_auth(client: 
         ws.send_text("ping")
         assert '"pong"' in ws.receive_text()
 
-    with client.websocket_connect(f"/api/v1/ws/board/{mid}") as ws:
+    with pytest.raises(WebSocketDisconnect) as exc_board:
+        with client.websocket_connect(f"/api/v1/ws/board/{mid}") as ws:
+            ws.receive_text()
+    assert exc_board.value.code == 1008
+
+    with client.websocket_connect(f"/api/v1/ws/board/{mid}?token={kitchen['token']}") as ws:
         ws.send_text("ping")
         assert '"pong"' in ws.receive_text()

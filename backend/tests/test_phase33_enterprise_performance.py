@@ -225,7 +225,8 @@ def test_redis_unavailable_graceful_fallback_and_health_ready(client, clean_db_a
         r_c = client.get("/api/v1/canteens")
         assert r_c.status_code == 200
         assert len(r_c.json()) >= 1
-        r_b = client.get("/api/v1/pickup/board")
+        admin_tok = _login(client, "admin@collegebites.edu", "Admin@12345")
+        r_b = client.get("/api/v1/pickup/board", headers={"Authorization": f"Bearer {admin_tok}"})
         assert r_b.status_code == 200
         r_h = client.get("/health/ready")
         assert r_h.status_code == 200

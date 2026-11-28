@@ -883,6 +883,7 @@ def cancel_or_reject_order(
     guest_access_token: Optional[str] = None,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
 ) -> OrderOut:
     order = db.scalar(
         select(Order)
@@ -893,14 +894,21 @@ def cancel_or_reject_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    if is_staff and staff_canteen_id and order.canteen_id != staff_canteen_id:
-        raise HTTPException(status_code=403, detail="Staff user is not authorized for this canteen")
-    if not is_staff:
-        if order.customer_id and order.customer_id != actor_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized to cancel this order")
+    if is_staff:
+        if staff_canteen_id and order.canteen_id != staff_canteen_id:
+            raise HTTPException(status_code=403, detail="Staff user is not authorized for this canteen")
+        if staff_counter_id and order.counter_id != staff_counter_id:
+            raise HTTPException(status_code=403, detail="Counter staff user is not authorized for this counter")
+    else:
         if order.is_guest:
             if not guest_access_token or order.guest_access_token_hash != sha256_hex(guest_access_token):
+                if actor_user_id is None and not guest_access_token:
+                    raise HTTPException(status_code=401, detail="Authentication or valid guest token required")
                 raise HTTPException(status_code=403, detail="Valid guest access token required")
+        elif actor_user_id is None:
+            raise HTTPException(status_code=401, detail="Authentication required to cancel this order")
+        elif order.customer_id != actor_user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to cancel this order")
 
     was_unpaid_pending = order.status in ("CREATED", "PAYMENT_PENDING") and order.payment_status != "CONFIRMED"
     target_status = "REJECTED" if cancellation_type == "rejected" else "CANCELLED"
@@ -979,6 +987,7 @@ def get_order_authorized(
     user_id: Optional[UUID] = None,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
     guest_access_token: Optional[str] = None,
 ) -> OrderOut:
     stmt = select(Order).options(
@@ -997,10 +1006,16 @@ def get_order_authorized(
     if is_staff:
         if staff_canteen_id and order.canteen_id != staff_canteen_id:
             raise HTTPException(status_code=403, detail="Staff user is not authorized for this canteen")
+        if staff_counter_id and order.counter_id != staff_counter_id:
+            raise HTTPException(status_code=403, detail="Counter staff user is not authorized for this counter")
     else:
         if order.is_guest:
             if not guest_access_token or order.guest_access_token_hash != sha256_hex(guest_access_token):
+                if user_id is None and not guest_access_token:
+                    raise HTTPException(status_code=401, detail="Authentication or valid guest token required")
                 raise HTTPException(status_code=403, detail="Valid guest access token required")
+        elif user_id is None:
+            raise HTTPException(status_code=401, detail="Authentication required to view this order")
         elif order.customer_id != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to view this order")
 

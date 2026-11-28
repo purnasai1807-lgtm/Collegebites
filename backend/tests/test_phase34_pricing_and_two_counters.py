@@ -832,9 +832,9 @@ def test_18_to_22_independent_menus_orders_kds_queues_and_tokens(client: TestCli
     assert ord_m_now["status"] == "READY"
     assert ord_s_now["status"] == "PLACED"
 
-    # Digital pickup board filters cleanly by counter
-    board_m = client.get(f"/api/v1/pickup/board?canteen_id={main['id']}").json()
-    board_s = client.get(f"/api/v1/pickup/board?canteen_id={snacks['id']}").json()
+    # Staff pickup board filters cleanly by counter
+    board_m = client.get(f"/api/v1/pickup/board?canteen_id={main['id']}", headers=admin["headers"]).json()
+    board_s = client.get(f"/api/v1/pickup/board?canteen_id={snacks['id']}", headers=admin["headers"]).json()
     assert any(x["token_code"] == conf_m["pickup_token_code"] for x in board_m["ready_for_pickup"])
     assert not any(x["token_code"] == conf_s["pickup_token_code"] for x in board_m["ready_for_pickup"] + board_m["now_preparing"])
     assert any(x["token_code"] == conf_s["pickup_token_code"] for x in board_s["now_preparing"])

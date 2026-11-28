@@ -161,6 +161,7 @@ def create_receipt_for_order(db: Session, order: Order, pickup_token: PickupToke
 
     receipt = Receipt(
         order_id=order.id,
+        user_id=order.customer_id,
         receipt_number=receipt_number,
         pickup_token_code=pickup_token.token_code,
         reprint_count=0,
@@ -178,13 +179,26 @@ def _resolve_order_and_receipt(
     user_id: Optional[UUID] = None,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
     guest_access_token: Optional[str] = None,
 ) -> tuple[Order, Receipt]:
+    raw_ref = order_id_or_number.strip()
+    order: Optional[Order] = None
+    receipt: Optional[Receipt] = None
+
     try:
-        oid = UUID(order_id_or_number)
-        order = db.get(Order, oid)
+        ref_uuid = UUID(raw_ref)
+        order = db.get(Order, ref_uuid)
+        if not order:
+            receipt = db.get(Receipt, ref_uuid)
+            if receipt:
+                order = db.get(Order, receipt.order_id)
     except ValueError:
-        order = db.scalar(select(Order).where(Order.order_number == order_id_or_number))
+        order = db.scalar(select(Order).where(Order.order_number == raw_ref))
+        if not order:
+            receipt = db.scalar(select(Receipt).where(Receipt.receipt_number == raw_ref))
+            if receipt:
+                order = db.get(Order, receipt.order_id)
 
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -192,17 +206,72 @@ def _resolve_order_and_receipt(
     if is_staff:
         if staff_canteen_id and order.canteen_id != staff_canteen_id:
             raise HTTPException(status_code=403, detail="Staff user is not authorized for this canteen")
+        if staff_counter_id and order.counter_id != staff_counter_id:
+            raise HTTPException(status_code=403, detail="Counter staff user is not authorized for this counter")
     else:
         if order.is_guest:
             if not guest_access_token or order.guest_access_token_hash != sha256_hex(guest_access_token):
+                if user_id is None and not guest_access_token:
+                    raise HTTPException(status_code=401, detail="Authentication or valid guest token required")
                 raise HTTPException(status_code=403, detail="Valid guest access token required")
+        elif user_id is None:
+            raise HTTPException(status_code=401, detail="Authentication required to access this receipt")
         elif order.customer_id != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to access this receipt")
 
-    receipt = db.scalar(select(Receipt).where(Receipt.order_id == order.id))
+    if receipt is None:
+        receipt = db.scalar(select(Receipt).where(Receipt.order_id == order.id))
     if not receipt:
         raise HTTPException(status_code=409, detail="Receipt is only available after payment confirmation")
+    if not is_staff and not order.is_guest and receipt.user_id is not None and receipt.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this receipt")
     return order, receipt
+
+
+def list_my_receipts(
+    db: Session,
+    *,
+    user_id: UUID,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Strictly retrieve receipts owned by the authenticated user account only."""
+    rows = db.execute(
+        select(Receipt, Order)
+        .join(Order, Order.id == Receipt.order_id)
+        .where(
+            Order.customer_id == user_id,
+            Receipt.user_id == user_id,
+            Order.is_guest.is_(False),
+        )
+        .order_by(Receipt.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    out: list[dict[str, Any]] = []
+    for receipt, order in rows:
+        snap = receipt.receipt_snapshot if isinstance(receipt.receipt_snapshot, dict) else {}
+        out.append(
+            {
+                "receipt_id": str(receipt.id),
+                "receipt_number": receipt.receipt_number,
+                "order_id": str(order.id),
+                "order_number": order.order_number,
+                "canteen_name": snap.get("canteen_name", "Campus Canteen"),
+                "counter_name": snap.get("counter_name", "Counter"),
+                "order_status": order.status,
+                "payment_status": order.payment_status,
+                "payment_method": snap.get("payment_method", order.payment_method),
+                "total_paid": f"{order.total_amount:.2f}",
+                "pickup_token": receipt.pickup_token_code,
+                "order_date": snap.get("order_date"),
+                "order_time": snap.get("order_time"),
+                "reprint_count": receipt.reprint_count,
+                "items": snap.get("items", []),
+                "created_at": receipt.created_at.isoformat() if receipt.created_at else None,
+            }
+        )
+    return out
 
 
 def get_receipt_payload(
@@ -212,6 +281,7 @@ def get_receipt_payload(
     user_id: Optional[UUID] = None,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
     guest_access_token: Optional[str] = None,
 ) -> dict[str, Any]:
     order, receipt = _resolve_order_and_receipt(
@@ -220,6 +290,7 @@ def get_receipt_payload(
         user_id=user_id,
         is_staff=is_staff,
         staff_canteen_id=staff_canteen_id,
+        staff_counter_id=staff_counter_id,
         guest_access_token=guest_access_token,
     )
     snap = dict(receipt.receipt_snapshot)
@@ -241,6 +312,7 @@ def generate_receipt_pdf_bytes(
     user_id: Optional[UUID] = None,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
     guest_access_token: Optional[str] = None,
 ) -> tuple[bytes, str]:
     snap = get_receipt_payload(
@@ -249,6 +321,7 @@ def generate_receipt_pdf_bytes(
         user_id=user_id,
         is_staff=is_staff,
         staff_canteen_id=staff_canteen_id,
+        staff_counter_id=staff_counter_id,
         guest_access_token=guest_access_token,
     )
     show_reprint = is_reprint_view or snap.get("reprint_count", 0) > 0
@@ -413,6 +486,7 @@ def get_escpos_payload(
     user_id: Optional[UUID] = None,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
     guest_access_token: Optional[str] = None,
 ) -> dict[str, Any]:
     order, receipt = _resolve_order_and_receipt(
@@ -421,6 +495,7 @@ def get_escpos_payload(
         user_id=user_id,
         is_staff=is_staff,
         staff_canteen_id=staff_canteen_id,
+        staff_counter_id=staff_counter_id,
         guest_access_token=guest_access_token,
     )
     raw_bytes = build_escpos_receipt_bytes(
@@ -668,6 +743,7 @@ def trigger_print_job(
     actor_label: str,
     is_staff: bool = False,
     staff_canteen_id: Optional[UUID] = None,
+    staff_counter_id: Optional[UUID] = None,
     guest_access_token: Optional[str] = None,
 ) -> ReceiptPrintJob:
     order, receipt = _resolve_order_and_receipt(
@@ -676,6 +752,7 @@ def trigger_print_job(
         user_id=actor_user_id,
         is_staff=is_staff,
         staff_canteen_id=staff_canteen_id,
+        staff_counter_id=staff_counter_id,
         guest_access_token=guest_access_token,
     )
     receipt = db.scalar(select(Receipt).where(Receipt.id == receipt.id).with_for_update())

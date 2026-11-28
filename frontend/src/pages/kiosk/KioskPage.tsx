@@ -88,8 +88,8 @@ export const KioskPage: React.FC = () => {
   }
 
   const fetchReceiptForOrder = async (ord: Order) => {
-    const tokenParam = ord.guest_access_token ? `?guest_token=${encodeURIComponent(ord.guest_access_token)}` : "";
-    const recRes = await api.get<ReceiptSnapshot>(`/tokens/receipts/${ord.order_number}${tokenParam}`);
+    const headers = ord.guest_access_token ? { "X-Guest-Token": ord.guest_access_token } : undefined;
+    const recRes = await api.get<ReceiptSnapshot>(`/tokens/receipts/${ord.order_number}`, { headers });
     setReceipt(recRes.data);
   };
 

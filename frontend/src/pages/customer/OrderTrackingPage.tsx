@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -22,7 +22,7 @@ import type { Order, ReceiptSnapshot } from "../../types";
 import { enableBrowserPushNotifications, playOrderAlertChime, showBrowserNotification } from "../../utils/notifications";
 import { BrandLoadingState, BrandLogo } from "../../components/branding/BrandLogo";
 import { ReceiptSlip } from "../../components/receipt/ReceiptSlip";
-import { Badge, Button, Card, ConfirmModal, Input, useToast } from "../../components/ui/Primitives";
+import { Badge, Button, Card, ConfirmModal, useToast } from "../../components/ui/Primitives";
 import { RealtimeStatusBadge } from "../../components/ui/RealtimeStatusBadge";
 import { getPublicRazorpayKeyId, openRazorpayModal } from "../../utils/razorpay";
 
@@ -100,19 +100,17 @@ const OrderCountdownBar: React.FC<{
 
 export const OrderTrackingPage: React.FC = () => {
   const { orderNumber } = useParams<{ orderNumber: string }>();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { pushToast } = useToast();
-  const { accessToken, guestOrderTokens, setSelectedCanteen } = useAppStore();
+  const { user, accessToken, guestOrderTokens, setSelectedCanteen } = useAppStore();
   const isOnline = useOfflineStore((s) => s.isOnline);
   const offlineCachedOrder = useMemo(
-    () => (orderNumber ? readOfflineCache<Order>(`order:${orderNumber}`) : null),
-    [orderNumber, isOnline]
+    () => (orderNumber && user?.id ? readOfflineCache<Order>(`order:${user.id}:${orderNumber}`) : null),
+    [orderNumber, user?.id, isOnline]
   );
 
-  const guestToken = searchParams.get("guest_token") || (orderNumber ? guestOrderTokens[orderNumber] : undefined);
-  const [manualGuestToken, setManualGuestToken] = useState(guestToken || "");
+  const guestToken = orderNumber ? guestOrderTokens[orderNumber] : undefined;
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notifPerm, setNotifPerm] = useState<string>(() =>
@@ -120,15 +118,17 @@ export const OrderTrackingPage: React.FC = () => {
   );
   const realtimeLiveRef = useRef(false);
   const prevTrackStateRef = useRef<{ status: string; delayed: number } | null>(null);
-  const effectiveToken = guestToken || manualGuestToken || undefined;
-  const querySuffix = effectiveToken ? `?guest_token=${encodeURIComponent(effectiveToken)}` : "";
+  const effectiveToken = guestToken || undefined;
+  const guestHeaders = effectiveToken ? { "X-Guest-Token": effectiveToken } : undefined;
+  const canQueryOrder = Boolean(orderNumber && (accessToken || effectiveToken));
 
   const { data: order, error, refetch } = useQuery<Order>({
-    queryKey: ["order", orderNumber, effectiveToken],
-    enabled: Boolean(orderNumber),
+    queryKey: ["order", user?.id || "guest", orderNumber, effectiveToken],
+    enabled: canQueryOrder,
+    retry: false,
     queryFn: () =>
-      fetchWithOfflineCache(`order:${orderNumber}`, async () =>
-        (await api.get(`/orders/${orderNumber}${querySuffix}`)).data
+      fetchWithOfflineCache(`order:${user?.id || "guest"}:${orderNumber}`, async () =>
+        (await api.get(`/orders/${encodeURIComponent(orderNumber!)}`, { headers: guestHeaders })).data
       ),
     refetchInterval: (query) => {
       const st = query.state.data?.status;
@@ -144,16 +144,19 @@ export const OrderTrackingPage: React.FC = () => {
 
   const { status: orderSyncStatus, lastSyncedAt: orderLastSyncedAt } = useRealtimeSync<{ order?: Order }>({
     enabled: Boolean(order?.id && !isTerminalOrder && (accessToken || effectiveToken)),
-    ssePath: order?.id ? `/realtime/orders/${order.id}/stream${querySuffix}` : null,
+    ssePath: order?.id ? `/realtime/orders/${order.id}/stream` : null,
     wsPath: order?.id ? `/ws/orders/${order.id}` : null,
     wsGuestToken: effectiveToken,
-    queryKeys: [["order", orderNumber, effectiveToken], ["receipt", orderNumber, effectiveToken]],
+    queryKeys: [
+      ["order", user?.id || "guest", orderNumber, effectiveToken],
+      ["receipt", user?.id || "guest", orderNumber, effectiveToken],
+    ],
     onSnapshot: (snap) => {
       if (snap?.order) {
-        if (orderNumber) saveOfflineCache(`order:${orderNumber}`, snap.order);
-        qc.setQueryData(["order", orderNumber, effectiveToken], snap.order);
+        if (orderNumber && user?.id) saveOfflineCache(`order:${user.id}:${orderNumber}`, snap.order);
+        qc.setQueryData(["order", user?.id || "guest", orderNumber, effectiveToken], snap.order);
         if (snap.order.payment_status === "CONFIRMED") {
-          qc.invalidateQueries({ queryKey: ["receipt", orderNumber, effectiveToken] });
+          qc.invalidateQueries({ queryKey: ["receipt", user?.id || "guest", orderNumber, effectiveToken] });
         }
       }
     },
@@ -161,11 +164,12 @@ export const OrderTrackingPage: React.FC = () => {
   realtimeLiveRef.current = orderSyncStatus === "live";
 
   const { data: receipt, refetch: refetchReceipt } = useQuery<ReceiptSnapshot>({
-    queryKey: ["receipt", orderNumber, effectiveToken],
-    enabled: Boolean(order && order.payment_status === "CONFIRMED"),
+    queryKey: ["receipt", user?.id || "guest", orderNumber, effectiveToken],
+    enabled: Boolean(canQueryOrder && order && order.payment_status === "CONFIRMED"),
+    retry: false,
     queryFn: () =>
-      fetchWithOfflineCache(`receipt:${orderNumber}`, async () =>
-        (await api.get(`/tokens/receipts/${orderNumber}${querySuffix}`)).data
+      fetchWithOfflineCache(`receipt:${user?.id || "guest"}:${orderNumber}`, async () =>
+        (await api.get(`/tokens/receipts/${encodeURIComponent(orderNumber!)}`, { headers: guestHeaders })).data
       ),
   });
 
@@ -175,9 +179,11 @@ export const OrderTrackingPage: React.FC = () => {
     if (!order) return;
     setBusy(true);
     try {
-      await api.post(`/orders/${order.id}/cancel${querySuffix}`, {
-        reason: "Cancelled by customer before preparation",
-      });
+      await api.post(
+        `/orders/${order.id}/cancel`,
+        { reason: "Cancelled by customer before preparation" },
+        { headers: guestHeaders }
+      );
       pushToast("Order cancelled (payment record retained per policy)", "info");
       setConfirmCancelOpen(false);
       refetch();
@@ -192,7 +198,7 @@ export const OrderTrackingPage: React.FC = () => {
     if (!order) return;
     setBusy(true);
     try {
-      const res = await api.post<Order>(`/payments/razorpay/sync/${order.id}${querySuffix}`);
+      const res = await api.post<Order>(`/payments/razorpay/sync/${order.id}`, {}, { headers: guestHeaders });
       if (res.data.payment_status === "CONFIRMED") {
         pushToast(`Payment verified! Pickup Token: ${res.data.pickup_token_code}`, "success");
         refetch();
@@ -212,7 +218,11 @@ export const OrderTrackingPage: React.FC = () => {
     if (!order) return;
     setBusy(true);
     try {
-      const res = await api.post<Order>(`/payments/retry/${order.id}${querySuffix}`, { payment_method: "razorpay" });
+      const res = await api.post<Order>(
+        `/payments/retry/${order.id}`,
+        { payment_method: "razorpay" },
+        { headers: guestHeaders }
+      );
       const ordForModal =
         effectiveToken && !res.data.guest_access_token
           ? { ...res.data, guest_access_token: effectiveToken }
@@ -265,24 +275,40 @@ export const OrderTrackingPage: React.FC = () => {
     prevTrackStateRef.current = { status: order.status, delayed: order.delayed_minutes };
   }, [order, pushToast]);
 
+  if (!canQueryOrder) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-12">
+        <Card className="p-6 text-center space-y-4">
+          <h1 className="text-lg font-extrabold text-slate-900">Sign In Required</h1>
+          <p className="text-xs text-slate-600">
+            Order status and receipts are strictly private to the owner account. Please sign in to view your orders.
+          </p>
+          <div className="flex justify-center gap-2">
+            <Button onClick={() => navigate("/login")}>Sign In</Button>
+            <Button variant="outline" onClick={() => navigate("/orders")}>
+              My Orders &amp; Receipts
+            </Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   if (error) {
     return (
       <div className="mx-auto max-w-md px-4 py-12">
-        <Card className="p-6 space-y-4">
-          <h1 className="text-lg font-bold text-slate-900">Guest Order Access Verification</h1>
+        <Card className="p-6 text-center space-y-4">
+          <h1 className="text-lg font-extrabold text-slate-900">Access Restricted</h1>
           <p className="text-xs text-slate-600">
-            Enter your secure Guest Access Token (issued at checkout) or sign in to view order <strong>{orderNumber}</strong>.
+            This order or receipt does not belong to your signed-in account or could not be found.
           </p>
-          <Input
-            value={manualGuestToken}
-            onChange={(e) => setManualGuestToken(e.target.value)}
-            placeholder="CBG...."
-          />
-          <div className="flex gap-2">
-            <Button onClick={() => refetch()}>Load Order</Button>
-            <Button variant="outline" onClick={() => navigate("/login")}>
-              Sign In
-            </Button>
+          <div className="flex justify-center gap-2">
+            <Button onClick={() => navigate("/orders")}>Go to My Receipts</Button>
+            {!accessToken && (
+              <Button variant="outline" onClick={() => navigate("/login")}>
+                Sign In
+              </Button>
+            )}
           </div>
         </Card>
       </div>

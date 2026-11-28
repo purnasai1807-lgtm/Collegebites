@@ -8,7 +8,7 @@ Create Date: 2026-11-25 22:15:00.000000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision: str = "c3d4e5f6a7b8"
 down_revision: Union[str, None] = "b2c3d4e5f6a7"
@@ -16,18 +16,24 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _has_table(name: str) -> bool:
+def _has_table(name: str, *, default_when_offline: bool = False) -> bool:
+    if context.is_offline_mode():
+        return default_when_offline
     return sa.inspect(op.get_bind()).has_table(name)
 
 
-def _has_column(table_name: str, col_name: str) -> bool:
+def _has_column(table_name: str, col_name: str, *, default_when_offline: bool = False) -> bool:
+    if context.is_offline_mode():
+        return default_when_offline
     insp = sa.inspect(op.get_bind())
     if not insp.has_table(table_name):
         return False
     return any(c["name"] == col_name for c in insp.get_columns(table_name))
 
 
-def _has_index(table_name: str, idx_name: str) -> bool:
+def _has_index(table_name: str, idx_name: str, *, default_when_offline: bool = False) -> bool:
+    if context.is_offline_mode():
+        return default_when_offline
     insp = sa.inspect(op.get_bind())
     if not insp.has_table(table_name):
         return False
@@ -67,9 +73,9 @@ def upgrade() -> None:
         op.create_index("ix_printer_devices_online", "printer_devices", ["is_connected", "is_online", "paper_status"])
 
     add_cols: list[sa.Column] = [
-        sa.Column("canteen_id", sa.Uuid(), sa.ForeignKey("canteens.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("payment_id", sa.Uuid(), sa.ForeignKey("payments.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("printer_device_id", sa.Uuid(), sa.ForeignKey("printer_devices.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("canteen_id", sa.Uuid(), sa.ForeignKey("canteens.id", name="fk_receipt_print_jobs_canteen_id", ondelete="CASCADE"), nullable=True),
+        sa.Column("payment_id", sa.Uuid(), sa.ForeignKey("payments.id", name="fk_receipt_print_jobs_payment_id", ondelete="SET NULL"), nullable=True),
+        sa.Column("printer_device_id", sa.Uuid(), sa.ForeignKey("printer_devices.id", name="fk_receipt_print_jobs_printer_device_id", ondelete="SET NULL"), nullable=True),
         sa.Column("idempotency_key", sa.String(length=120), nullable=True),
         sa.Column("max_retries", sa.Integer(), nullable=False, server_default="10"),
         sa.Column("payload_checksum", sa.String(length=64), nullable=True),
@@ -85,9 +91,11 @@ def upgrade() -> None:
         sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("claimed_by_agent", sa.String(length=120), nullable=True),
     ]
-    for col in add_cols:
-        if not _has_column("receipt_print_jobs", col.name):
-            op.add_column("receipt_print_jobs", col)
+    cols_to_add = [col for col in add_cols if not _has_column("receipt_print_jobs", col.name)]
+    if cols_to_add:
+        with op.batch_alter_table("receipt_print_jobs") as batch_op:
+            for col in cols_to_add:
+                batch_op.add_column(col)
 
     if not _has_index("receipt_print_jobs", "ix_receipt_print_jobs_canteen_id"):
         op.create_index("ix_receipt_print_jobs_canteen_id", "receipt_print_jobs", ["canteen_id"])
@@ -112,7 +120,7 @@ def downgrade() -> None:
         "ix_receipt_print_jobs_payment_id",
         "ix_receipt_print_jobs_canteen_id",
     ):
-        if _has_index("receipt_print_jobs", idx_name):
+        if _has_index("receipt_print_jobs", idx_name, default_when_offline=True):
             op.drop_index(idx_name, table_name="receipt_print_jobs")
 
     drop_cols = [
@@ -134,11 +142,11 @@ def downgrade() -> None:
         "payment_id",
         "canteen_id",
     ]
-    if _has_table("receipt_print_jobs"):
+    if _has_table("receipt_print_jobs", default_when_offline=True):
         with op.batch_alter_table("receipt_print_jobs") as batch_op:
             for cname in drop_cols:
-                if _has_column("receipt_print_jobs", cname):
+                if _has_column("receipt_print_jobs", cname, default_when_offline=True):
                     batch_op.drop_column(cname)
 
-    if _has_table("printer_devices"):
+    if _has_table("printer_devices", default_when_offline=True):
         op.drop_table("printer_devices")

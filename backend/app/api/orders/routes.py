@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
-from app.core.http_cache import set_public_cache
+from app.core.http_cache import set_private_no_store, set_public_cache
 from app.core.permissions import (
     ROLE_CANTEEN_MANAGER,
     ROLE_CASHIER,
@@ -19,6 +19,7 @@ from app.core.permissions import (
     client_ip_from_request,
     get_current_principal,
     get_optional_principal,
+    scoped_counter_for_principal,
 )
 from app.models.order import Order, OrderItem
 from app.schemas.order import CheckoutRequest, OrderCancelRequest, OrderOut, PickupSlotOut
@@ -62,22 +63,45 @@ def checkout(
     )
 
 
-@router.get("/my", response_model=list[OrderOut])
-def my_orders(
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    principal: AuthenticatedPrincipal = Depends(get_current_principal),
-    db: Session = Depends(get_db),
-):
+def _load_my_orders(
+    db: Session,
+    principal: AuthenticatedPrincipal,
+    limit: int,
+    offset: int,
+) -> list[OrderOut]:
     orders = db.scalars(
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.customizations), selectinload(Order.status_history))
-        .where(Order.customer_id == principal.user.id)
+        .where(Order.customer_id == principal.user.id, Order.is_guest.is_(False))
         .order_by(Order.created_at.desc())
         .offset(offset)
         .limit(limit)
     ).all()
     return order_service.serialize_orders_batch(db, list(orders))
+
+
+@router.get("/my", response_model=list[OrderOut])
+def my_orders(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    set_private_no_store(response)
+    return _load_my_orders(db, principal, limit, offset)
+
+
+@router.get("/my-orders", response_model=list[OrderOut])
+def my_orders_alias(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    set_private_no_store(response)
+    return _load_my_orders(db, principal, limit, offset)
 
 
 class GuestOrderLookupRequest(BaseModel):
@@ -86,7 +110,8 @@ class GuestOrderLookupRequest(BaseModel):
 
 
 @router.post("/guest/lookup", response_model=list[OrderOut])
-def guest_order_lookup(payload: GuestOrderLookupRequest, db: Session = Depends(get_db)):
+def guest_order_lookup(payload: GuestOrderLookupRequest, response: Response, db: Session = Depends(get_db)):
+    set_private_no_store(response)
     return order_service.lookup_guest_orders(
         db, order_number=payload.order_number, guest_contact=payload.guest_contact
     )
@@ -103,11 +128,13 @@ def _staff_scoped_canteen(principal: Optional[AuthenticatedPrincipal]) -> Option
 @router.get("/{order_id_or_number}", response_model=OrderOut)
 def get_order(
     order_id_or_number: str,
+    response: Response,
     guest_token: Optional[str] = Query(default=None),
     x_guest_token: Optional[str] = Header(default=None),
     principal: Optional[AuthenticatedPrincipal] = Depends(get_optional_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     is_staff = bool(principal and principal.has_role(*STAFF_ROLES))
     return order_service.get_order_authorized(
         db,
@@ -115,6 +142,7 @@ def get_order(
         user_id=principal.user.id if principal else None,
         is_staff=is_staff,
         staff_canteen_id=_staff_scoped_canteen(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
         guest_access_token=guest_token or x_guest_token,
     )
 
@@ -123,11 +151,13 @@ def get_order(
 def cancel_order(
     order_id: UUID,
     payload: OrderCancelRequest,
+    response: Response,
     guest_token: Optional[str] = Query(default=None),
     x_guest_token: Optional[str] = Header(default=None),
     principal: Optional[AuthenticatedPrincipal] = Depends(get_optional_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     is_staff = bool(principal and principal.has_role(*STAFF_ROLES))
     return order_service.cancel_or_reject_order(
         db,
@@ -139,4 +169,5 @@ def cancel_order(
         guest_access_token=guest_token or x_guest_token,
         is_staff=is_staff,
         staff_canteen_id=_staff_scoped_canteen(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
     )

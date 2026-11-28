@@ -95,7 +95,7 @@ def emit_order_event_sync(canteen_id: str, order_id: str, event_type: str, paylo
         from app.core.cache import invalidate_board_and_queue, invalidate_reports
 
         invalidate_board_and_queue(canteen_id)
-        if event_type in ("order.placed", "order.completed", "order.cancelled", "order.rejected"):
+        if event_type.startswith("order.") or event_type.startswith("payment.") or event_type in ("menu.updated", "stock.updated"):
             invalidate_reports(canteen_id)
     except Exception:
         pass

@@ -184,6 +184,8 @@ def get_analytics_report(
             Order.confirmed_at,
             Order.ready_at,
             Order.completed_at,
+            Order.payment_method,
+            Order.customer_id,
         )
         .where(*paid_filters)
         .order_by(Order.created_at.asc())
@@ -200,25 +202,68 @@ def get_analytics_report(
     hourly_counts: dict[int, int] = {h: 0 for h in range(24)}
     hourly_completed: dict[int, int] = {h: 0 for h in range(24)}
     hourly_revenue: dict[int, Decimal] = {h: Decimal("0.00") for h in range(24)}
+    WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weekday_map: dict[int, dict[str, Any]] = {
+        idx: {
+            "weekday_index": idx,
+            "weekday": name,
+            "orders": 0,
+            "completed_orders": 0,
+            "cancelled_orders": 0,
+            "revenue": Decimal("0.00"),
+        }
+        for idx, name in enumerate(WEEKDAY_NAMES)
+    }
+    heatmap_counts: dict[tuple[int, int], dict[str, Any]] = {}
+    daily_ops_extra: dict[str, dict[str, Any]] = {}
     prep_durations: list[float] = []
     wait_durations: list[float] = []
     completion_durations: list[float] = []
     status_counts: dict[str, int] = {}
     channel_counts: dict[str, dict[str, Any]] = {}
+    pay_method_map: dict[str, list[Any]] = {}
+    cust_order_map: dict[UUID, int] = {}
 
     for o in paid_orders:
-        o_created, o_total, o_status, o_channel, _o_counter, _o_cashier, o_confirmed, o_ready, o_completed = o
+        (
+            o_created,
+            o_total,
+            o_status,
+            o_channel,
+            _o_counter,
+            _o_cashier,
+            o_confirmed,
+            o_ready,
+            o_completed,
+            o_pay_method,
+            o_customer_id,
+        ) = o
+        pm_key = o_pay_method or "unknown"
+        if pm_key not in pay_method_map:
+            pay_method_map[pm_key] = [0, Decimal("0.00")]
+        pay_method_map[pm_key][0] += 1
+        pay_method_map[pm_key][1] += o_total
+        if o_customer_id is not None:
+            cust_order_map[o_customer_id] = cust_order_map.get(o_customer_id, 0) + 1
         local_dt = _to_local_dt(o_created, college_tz)
         day_key = local_dt.strftime("%Y-%m-%d")
         iso = local_dt.isocalendar()
         week_key = f"{iso.year}-W{iso.week:02d}"
         week_start = (local_dt.date() - timedelta(days=local_dt.weekday())).isoformat()
         month_key = local_dt.strftime("%Y-%m")
+        wd = local_dt.weekday()
+        hr = local_dt.hour
 
         if day_key not in daily_map:
             daily_map[day_key] = {"date": day_key, "orders": 0, "revenue": Decimal("0.00")}
         daily_map[day_key]["orders"] += 1
         daily_map[day_key]["revenue"] += o_total
+        d_extra = daily_ops_extra.setdefault(
+            day_key,
+            {"completed_orders": 0, "cancelled_orders": 0, "delayed_orders": 0, "prep_sum": 0.0, "prep_cnt": 0, "fulfil_sum": 0.0, "fulfil_cnt": 0},
+        )
+        if o_status == "COMPLETED":
+            d_extra["completed_orders"] += 1
 
         if week_key not in weekly_map:
             weekly_map[week_key] = {"week": week_key, "week_start": week_start, "orders": 0, "revenue": Decimal("0.00")}
@@ -230,7 +275,15 @@ def get_analytics_report(
         monthly_map[month_key]["orders"] += 1
         monthly_map[month_key]["revenue"] += o_total
 
-        hr = local_dt.hour
+        weekday_map[wd]["orders"] += 1
+        if o_status == "COMPLETED":
+            weekday_map[wd]["completed_orders"] += 1
+        weekday_map[wd]["revenue"] += o_total
+
+        hm_cell = heatmap_counts.setdefault((wd, hr), {"orders": 0, "revenue": Decimal("0.00")})
+        hm_cell["orders"] += 1
+        hm_cell["revenue"] += o_total
+
         hourly_counts[hr] = hourly_counts.get(hr, 0) + 1
         if o_status == "COMPLETED":
             hourly_completed[hr] = hourly_completed.get(hr, 0) + 1
@@ -244,15 +297,86 @@ def get_analytics_report(
         channel_counts[ch]["revenue"] += o_total
 
         if o_confirmed and o_ready:
-            prep_durations.append(max(0.0, (o_ready - o_confirmed).total_seconds() / 60.0))
+            pm = max(0.0, (o_ready - o_confirmed).total_seconds() / 60.0)
+            prep_durations.append(pm)
+            d_extra["prep_sum"] += pm
+            d_extra["prep_cnt"] += 1
         if o_ready and o_completed:
             wait_durations.append(max(0.0, (o_completed - o_ready).total_seconds() / 60.0))
         if o_confirmed and o_completed:
-            completion_durations.append(max(0.0, (o_completed - o_confirmed).total_seconds() / 60.0))
+            fm = max(0.0, (o_completed - o_confirmed).total_seconds() / 60.0)
+            completion_durations.append(fm)
+            d_extra["fulfil_sum"] += fm
+            d_extra["fulfil_cnt"] += 1
 
-    daily_series = [
-        {"date": v["date"], "orders": v["orders"], "revenue": float(v["revenue"])}
-        for v in sorted(daily_map.values(), key=lambda x: x["date"])
+    # Include cancelled/delayed/completed/pending counts across all orders in range (replaces separate ops_row query)
+    all_status_rows = db.execute(
+        select(Order.created_at, Order.status, Order.delayed_minutes).where(*order_filters)
+    ).all()
+    total_created_orders = len(all_status_rows)
+    completed_orders = 0
+    cancelled_orders = 0
+    pending_orders = 0
+    delayed_orders = 0
+    for a_created, a_status, a_delayed in all_status_rows:
+        ldt = _to_local_dt(a_created, college_tz)
+        dkey = ldt.strftime("%Y-%m-%d")
+        wdi = ldt.weekday()
+        dx = daily_ops_extra.setdefault(
+            dkey,
+            {"completed_orders": 0, "cancelled_orders": 0, "delayed_orders": 0, "prep_sum": 0.0, "prep_cnt": 0, "fulfil_sum": 0.0, "fulfil_cnt": 0},
+        )
+        if a_status == "COMPLETED":
+            completed_orders += 1
+        elif a_status in ("CANCELLED", "REJECTED"):
+            cancelled_orders += 1
+            dx["cancelled_orders"] += 1
+            weekday_map[wdi]["cancelled_orders"] += 1
+        elif a_status in PENDING_ACTIVE_STATUSES:
+            pending_orders += 1
+        if (a_delayed or 0) > 0:
+            delayed_orders += 1
+            dx["delayed_orders"] += 1
+
+    daily_series = []
+    for v in sorted(daily_map.values(), key=lambda x: x["date"]):
+        dx = daily_ops_extra.get(v["date"], {})
+        p_cnt = dx.get("prep_cnt", 0)
+        f_cnt = dx.get("fulfil_cnt", 0)
+        daily_series.append(
+            {
+                "date": v["date"],
+                "orders": v["orders"],
+                "completed_orders": dx.get("completed_orders", 0),
+                "cancelled_orders": dx.get("cancelled_orders", 0),
+                "delayed_orders": dx.get("delayed_orders", 0),
+                "revenue": float(v["revenue"]),
+                "avg_prep_minutes": round(dx["prep_sum"] / p_cnt, 1) if p_cnt else 0.0,
+                "avg_fulfilment_minutes": round(dx["fulfil_sum"] / f_cnt, 1) if f_cnt else 0.0,
+            }
+        )
+    weekday_series = [
+        {
+            "weekday_index": w["weekday_index"],
+            "weekday": w["weekday"],
+            "orders": w["orders"],
+            "completed_orders": w["completed_orders"],
+            "cancelled_orders": w["cancelled_orders"],
+            "revenue": float(w["revenue"]),
+        }
+        for w in sorted(weekday_map.values(), key=lambda x: x["weekday_index"])
+    ]
+    hourly_heatmap = [
+        {
+            "weekday_index": wd_idx,
+            "weekday": WEEKDAY_NAMES[wd_idx],
+            "hour": hr,
+            "hour_label": f"{hr:02d}:00",
+            "orders": heatmap_counts.get((wd_idx, hr), {}).get("orders", 0),
+            "revenue": float(heatmap_counts.get((wd_idx, hr), {}).get("revenue", Decimal("0.00"))),
+        }
+        for wd_idx in range(7)
+        for hr in range(7, 23)
     ]
     weekly_series = [
         {"week": v["week"], "week_start": v["week_start"], "orders": v["orders"], "revenue": float(v["revenue"])}
@@ -277,37 +401,69 @@ def get_analytics_report(
         if c > 0
     ]
 
-    # Top food items & least ordered active food items
-    item_sales_stmt = (
+    # Single unified OrderItem query feeding item performance, category sales, top-5 demand trends, and market-basket pairs
+    oi_all_rows = db.execute(
         select(
+            OrderItem.order_id,
+            Order.created_at,
             OrderItem.food_item_id,
             OrderItem.item_name,
-            func.sum(OrderItem.quantity),
-            func.coalesce(func.sum(OrderItem.line_total), 0),
-            func.count(func.distinct(OrderItem.order_id)),
+            OrderItem.quantity,
+            OrderItem.line_total,
+            FoodItem.category_id,
+            FoodCategory.name,
         )
         .join(Order, Order.id == OrderItem.order_id)
+        .outerjoin(FoodItem, FoodItem.id == OrderItem.food_item_id)
+        .outerjoin(FoodCategory, FoodCategory.id == FoodItem.category_id)
         .where(*paid_filters)
-    )
-    if food_item_id:
-        item_sales_stmt = item_sales_stmt.where(OrderItem.food_item_id == food_item_id)
-    elif category_id:
-        item_sales_stmt = item_sales_stmt.join(FoodItem, FoodItem.id == OrderItem.food_item_id).where(
-            FoodItem.category_id == category_id
-        )
-    item_sales_rows = db.execute(item_sales_stmt.group_by(OrderItem.food_item_id, OrderItem.item_name)).all()
+    ).all()
 
-    sold_by_food_id: dict[UUID, tuple[int, float, int]] = {}
-    sold_by_name: dict[str, tuple[int, float, int]] = {}
-    for fid, iname, qty, rev, ocnt in item_sales_rows:
+    sold_qty_by_food_id: dict[UUID, int] = {}
+    sold_rev_by_food_id: dict[UUID, float] = {}
+    sold_orders_by_food_id: dict[UUID, set[UUID]] = {}
+    sold_qty_by_name: dict[str, int] = {}
+    sold_rev_by_name: dict[str, float] = {}
+    sold_orders_by_name: dict[str, set[UUID]] = {}
+    cat_acc: dict[str, list[Any]] = {}
+    items_per_order: dict[UUID, set[str]] = {}
+
+    for idx_oi, (oid_val, o_ts, fid, iname, qty, line_tot, f_cat_id, cat_name) in enumerate(oi_all_rows):
         q_i = int(qty or 0)
-        r_f = float(rev or 0)
-        o_i = int(ocnt or 0)
-        if fid:
-            prev_q, prev_r, prev_o = sold_by_food_id.get(fid, (0, 0.0, 0))
-            sold_by_food_id[fid] = (prev_q + q_i, round(prev_r + r_f, 2), prev_o + o_i)
-        prev_nq, prev_nr, prev_no = sold_by_name.get(iname, (0, 0.0, 0))
-        sold_by_name[iname] = (prev_nq + q_i, round(prev_nr + r_f, 2), prev_no + o_i)
+        r_f = float(line_tot or 0)
+        matches_filter = True
+        if food_item_id and fid != food_item_id:
+            matches_filter = False
+        elif not food_item_id and category_id and f_cat_id != category_id:
+            matches_filter = False
+
+        if matches_filter:
+            if fid:
+                sold_qty_by_food_id[fid] = sold_qty_by_food_id.get(fid, 0) + q_i
+                sold_rev_by_food_id[fid] = round(sold_rev_by_food_id.get(fid, 0.0) + r_f, 2)
+                sold_orders_by_food_id.setdefault(fid, set()).add(oid_val)
+            if iname:
+                sold_qty_by_name[iname] = sold_qty_by_name.get(iname, 0) + q_i
+                sold_rev_by_name[iname] = round(sold_rev_by_name.get(iname, 0.0) + r_f, 2)
+                sold_orders_by_name.setdefault(iname, set()).add(oid_val)
+
+        if cat_name:
+            if cat_name not in cat_acc:
+                cat_acc[cat_name] = [0, Decimal("0.00")]
+            cat_acc[cat_name][0] += q_i
+            cat_acc[cat_name][1] += Decimal(str(line_tot or 0))
+
+        if idx_oi < 6000 and iname:
+            items_per_order.setdefault(oid_val, set()).add(iname)
+
+    sold_by_food_id: dict[UUID, tuple[int, float, int]] = {
+        fid: (sold_qty_by_food_id[fid], sold_rev_by_food_id[fid], len(sold_orders_by_food_id[fid]))
+        for fid in sold_qty_by_food_id
+    }
+    sold_by_name: dict[str, tuple[int, float, int]] = {
+        iname: (sold_qty_by_name[iname], sold_rev_by_name[iname], len(sold_orders_by_name[iname]))
+        for iname in sold_qty_by_name
+    }
 
     top_items = [
         {"item_name": name, "quantity_sold": q, "order_count": oc, "revenue": r}
@@ -339,19 +495,57 @@ def get_analytics_report(
         key=lambda x: (x["quantity_sold"], x["revenue"], x["item_name"]),
     )[:15]
 
-    cat_rows = db.execute(
-        select(
-            FoodCategory.name,
-            func.sum(OrderItem.quantity),
-            func.coalesce(func.sum(OrderItem.line_total), 0),
-        )
-        .join(Order, Order.id == OrderItem.order_id)
-        .join(FoodItem, FoodItem.id == OrderItem.food_item_id)
-        .join(FoodCategory, FoodCategory.id == FoodItem.category_id)
-        .where(*paid_filters)
-        .group_by(FoodCategory.name)
-    ).all()
-    category_sales = [{"category": name, "quantity": int(qty), "revenue": float(rev)} for name, qty, rev in cat_rows]
+    # Out-of-stock / unavailable products + Product demand trends (top 5) + Market-basket co-occurrence
+    out_of_stock_items = [
+        {
+            "food_item_id": str(fi.id),
+            "item_name": fi.name,
+            "category_name": cat_name,
+            "reason": "Low ingredients" if fi.insufficient_ingredients else "Marked sold out",
+            "insufficient_ingredients": bool(fi.insufficient_ingredients),
+        }
+        for fi, cat_name in active_foods
+        if (not fi.is_available) or fi.insufficient_ingredients
+    ]
+
+    top_5_names = [t["item_name"] for t in top_items[:5]]
+    top_5_set = set(top_5_names)
+    product_demand_trends: list[dict[str, Any]] = []
+    if top_5_names:
+        trend_by_day: dict[str, dict[str, int]] = {d["date"]: {n: 0 for n in top_5_names} for d in daily_series}
+        for _oid_val, o_ts, _fid, iname, iqty, _lt, _fc, _cn in oi_all_rows:
+            if iname in top_5_set:
+                dkey = _to_local_dt(o_ts, college_tz).strftime("%Y-%m-%d")
+                bucket = trend_by_day.setdefault(dkey, {n: 0 for n in top_5_names})
+                bucket[iname] = bucket.get(iname, 0) + int(iqty or 0)
+        product_demand_trends = [
+            {"date": dkey, **counts} for dkey, counts in sorted(trend_by_day.items(), key=lambda x: x[0])
+        ]
+
+    # Frequently purchased item combinations across confirmed orders in range
+    pair_counts: dict[tuple[str, str], int] = {}
+    multi_item_orders = 0
+    for name_set in items_per_order.values():
+        if len(name_set) < 2:
+            continue
+        multi_item_orders += 1
+        sorted_names = sorted(name_set)
+        for idx_a in range(len(sorted_names)):
+            for idx_b in range(idx_a + 1, len(sorted_names)):
+                pair = (sorted_names[idx_a], sorted_names[idx_b])
+                pair_counts[pair] = pair_counts.get(pair, 0) + 1
+    frequent_combinations = [
+        {
+            "item_a": a,
+            "item_b": b,
+            "pair_label": f"{a} + {b}",
+            "co_order_count": cnt,
+            "support_percent": round((cnt / max(1, total_orders)) * 100.0, 1),
+        }
+        for (a, b), cnt in sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+    ]
+
+    category_sales = [{"category": name, "quantity": vals[0], "revenue": float(vals[1])} for name, vals in cat_acc.items()]
 
     counter_rows = db.execute(
         select(Counter.name, func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0))
@@ -401,12 +595,7 @@ def get_analytics_report(
             "utilization_percent": round(min(100.0, (act_cnt / cap) * 100.0), 1),
         })
 
-    pay_rows = db.execute(
-        select(Order.payment_method, func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0))
-        .where(*paid_filters)
-        .group_by(Order.payment_method)
-    ).all()
-    payment_breakdown = [{"method": m, "orders": int(cnt), "amount": float(amt)} for m, cnt, amt in pay_rows]
+    payment_breakdown = [{"method": m, "orders": vals[0], "amount": float(vals[1])} for m, vals in pay_method_map.items()]
 
     order_status_breakdown = [{"status": st, "count": cnt} for st, cnt in sorted(status_counts.items())]
     channel_breakdown = [
@@ -430,19 +619,7 @@ def get_analytics_report(
     total_attempts = sum(c for c, _ in pay_status_map.values())
     pay_success_rate = round((confirmed_cnt / max(1, total_attempts)) * 100.0, 1) if total_attempts else 0.0
 
-    # 2. Operations metrics collapsed into 1 single conditional aggregate query
-    ops_row = db.execute(
-        select(
-            func.coalesce(func.sum(case((Order.status == "COMPLETED", 1), else_=0)), 0),
-            func.coalesce(func.sum(case((Order.status.in_(("CANCELLED", "REJECTED")), 1), else_=0)), 0),
-            func.coalesce(func.sum(case((Order.status.in_(PENDING_ACTIVE_STATUSES), 1), else_=0)), 0),
-            func.coalesce(func.sum(case((Order.delayed_minutes > 0, 1), else_=0)), 0),
-        ).where(*order_filters)
-    ).one()
-    completed_orders = int(ops_row[0] or 0)
-    cancelled_orders = int(ops_row[1] or 0)
-    pending_orders = int(ops_row[2] or 0)
-    delayed_orders = int(ops_row[3] or 0)
+    # 2. Operations metrics (already accumulated above from all_status_rows)
     completion_rate = min(100.0, round((completed_orders / max(1, total_orders)) * 100.0, 1)) if total_orders else 0.0
 
     # 3. Inventory metrics, consumption & shortage trends (outerjoin WastageRecord so prepared-food waste counts too)
@@ -587,21 +764,53 @@ def get_analytics_report(
         exp_stmt = exp_stmt.where(InventoryItem.canteen_id == canteen_id)
     expiring_count = db.scalar(exp_stmt) or 0
 
-    # 4. Customer metrics
+    # 4. Customer metrics (new, returning, repeat rate, average spending, satisfaction trends)
     total_customers = db.scalar(select(func.count(User.id)).where(User.user_kind == "customer")) or 0
-    cust_order_counts = db.execute(
-        select(Order.customer_id, func.count(Order.id))
-        .where(*paid_filters, Order.customer_id.is_not(None))
-        .group_by(Order.customer_id)
-    ).all()
-    returning_customers = sum(1 for _cid, cnt in cust_order_counts if cnt > 1)
-    repeat_rate = round((returning_customers / max(1, len(cust_order_counts))) * 100.0, 1) if cust_order_counts else 0.0
-    review_stmt = select(func.coalesce(func.avg(Review.rating), 0)).where(
+    new_customers = (
+        db.scalar(
+            select(func.count(User.id)).where(
+                User.user_kind == "customer",
+                User.created_at >= s_dt,
+                User.created_at <= e_dt,
+            )
+        )
+        or 0
+    )
+    active_cust_cnt = len(cust_order_map)
+    returning_customers = sum(1 for cnt in cust_order_map.values() if cnt > 1)
+    repeat_rate = round((returning_customers / max(1, active_cust_cnt)) * 100.0, 1) if active_cust_cnt else 0.0
+    avg_customer_spending = (
+        (net_sales / Decimal(active_cust_cnt)).quantize(Decimal("0.01")) if active_cust_cnt > 0 else Decimal("0.00")
+    )
+
+    rev_rows_stmt = select(Review.rating, Review.created_at).where(
         Review.is_visible.is_(True), Review.created_at >= s_dt, Review.created_at <= e_dt
     )
     if canteen_id:
-        review_stmt = review_stmt.where(Review.canteen_id == canteen_id)
-    avg_rating = db.scalar(review_stmt) or 0
+        rev_rows_stmt = rev_rows_stmt.where(Review.canteen_id == canteen_id)
+    rev_rows = db.execute(rev_rows_stmt.order_by(Review.created_at.asc())).all()
+    rating_dist = {str(s): 0 for s in range(1, 6)}
+    sat_daily: dict[str, dict[str, Any]] = {}
+    rating_sum = 0.0
+    for r_val, r_ts in rev_rows:
+        rv = int(r_val or 0)
+        rating_sum += rv
+        if 1 <= rv <= 5:
+            rating_dist[str(rv)] += 1
+        if r_ts:
+            dkey = _to_local_dt(r_ts, college_tz).strftime("%Y-%m-%d")
+            sd = sat_daily.setdefault(dkey, {"date": dkey, "rating_sum": 0.0, "review_count": 0})
+            sd["rating_sum"] += rv
+            sd["review_count"] += 1
+    avg_rating = (rating_sum / len(rev_rows)) if rev_rows else 0.0
+    satisfaction_trends = [
+        {
+            "date": k,
+            "avg_rating": round(v["rating_sum"] / max(1, v["review_count"]), 2),
+            "review_count": v["review_count"],
+        }
+        for k, v in sorted(sat_daily.items())
+    ]
 
     # 5. Support metrics
     sup_stmt = select(SupportTicket).where(SupportTicket.created_at >= s_dt, SupportTicket.created_at <= e_dt)
@@ -723,42 +932,48 @@ def get_analytics_report(
             "Verified net revenue is displayed separately and is NOT labeled as profit."
         )
 
+    collected_payments = Decimal(str(confirmed_amt)).quantize(Decimal("0.01"))
+    refunds_amount = Decimal("0.00")
+    cancellation_rate_percent = (
+        round((cancelled_orders / max(1, total_created_orders)) * 100.0, 1) if total_created_orders > 0 else 0.0
+    )
+
     period_comparison = None
+    prev_end = s_date - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=max(0, span_days - 1))
+    prev_s_dt = datetime.combine(prev_start, time.min, tzinfo=college_tz)
+    prev_e_dt = datetime.combine(prev_end, time.max, tzinfo=college_tz)
+    prev_filters = [
+        Order.created_at >= prev_s_dt,
+        Order.created_at <= prev_e_dt,
+        Order.payment_status == "CONFIRMED",
+    ]
+    if canteen_id:
+        prev_filters.append(Order.canteen_id == canteen_id)
+    if food_item_id:
+        prev_filters.append(
+            Order.id.in_(select(OrderItem.order_id).where(OrderItem.food_item_id == food_item_id))
+        )
+    elif category_id:
+        prev_filters.append(
+            Order.id.in_(
+                select(OrderItem.order_id)
+                .join(FoodItem, FoodItem.id == OrderItem.food_item_id)
+                .where(FoodItem.category_id == category_id)
+            )
+        )
+    prev_row = db.execute(
+        select(func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0)).where(*prev_filters)
+    ).one()
+    prev_orders = int(prev_row[0] or 0)
+    prev_rev = Decimal(str(prev_row[1] or 0)).quantize(Decimal("0.01"))
+    orders_change_pct = (
+        round(((total_orders - prev_orders) / prev_orders) * 100.0, 1) if prev_orders > 0 else None
+    )
+    rev_change_pct = (
+        round(float(((net_sales - prev_rev) / prev_rev) * Decimal("100")), 1) if prev_rev > Decimal("0.00") else None
+    )
     if compare_previous:
-        prev_end = s_date - timedelta(days=1)
-        prev_start = prev_end - timedelta(days=max(0, span_days - 1))
-        prev_s_dt = datetime.combine(prev_start, time.min, tzinfo=college_tz)
-        prev_e_dt = datetime.combine(prev_end, time.max, tzinfo=college_tz)
-        prev_filters = [
-            Order.created_at >= prev_s_dt,
-            Order.created_at <= prev_e_dt,
-            Order.payment_status == "CONFIRMED",
-        ]
-        if canteen_id:
-            prev_filters.append(Order.canteen_id == canteen_id)
-        if food_item_id:
-            prev_filters.append(
-                Order.id.in_(select(OrderItem.order_id).where(OrderItem.food_item_id == food_item_id))
-            )
-        elif category_id:
-            prev_filters.append(
-                Order.id.in_(
-                    select(OrderItem.order_id)
-                    .join(FoodItem, FoodItem.id == OrderItem.food_item_id)
-                    .where(FoodItem.category_id == category_id)
-                )
-            )
-        prev_row = db.execute(
-            select(func.count(Order.id), func.coalesce(func.sum(Order.total_amount), 0)).where(*prev_filters)
-        ).one()
-        prev_orders = int(prev_row[0] or 0)
-        prev_rev = Decimal(str(prev_row[1] or 0)).quantize(Decimal("0.01"))
-        orders_change_pct = (
-            round(((total_orders - prev_orders) / prev_orders) * 100.0, 1) if prev_orders > 0 else None
-        )
-        rev_change_pct = (
-            round(float(((net_sales - prev_rev) / prev_rev) * Decimal("100")), 1) if prev_rev > Decimal("0.00") else None
-        )
         period_comparison = {
             "previous_range": {"start_date": prev_start.isoformat(), "end_date": prev_end.isoformat()},
             "previous_orders": prev_orders,
@@ -768,6 +983,95 @@ def get_analytics_report(
             "data_classification": "actual",
         }
 
+    # Section 7: Real database rule-based Business Insights (never fabricated or mislabeled as ML predictions)
+    business_insights: list[dict[str, Any]] = []
+    if peak_hours:
+        top_hr = peak_hours[0]
+        peak_wd = max(weekday_series, key=lambda x: x["orders"], default=None)
+        business_insights.append({
+            "id": "peak_demand_window",
+            "category": "demand",
+            "severity": "info",
+            "title": f"Peak Demand Window: {top_hr['hour']}" + (f" ({peak_wd['weekday']})" if peak_wd and peak_wd["orders"] > 0 else ""),
+            "detail": f"{top_hr['orders']} confirmed orders (Rs.{top_hr['revenue']:.2f}) concentrated around {top_hr['hour']}. Pre-batching top dishes 15 minutes prior reduces queue backlog.",
+            "metric_label": f"{top_hr['orders']} orders",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders", "hour": int(top_hr["hour"][:2])},
+        })
+    if rev_change_pct is not None and rev_change_pct <= -15.0:
+        business_insights.append({
+            "id": "revenue_decline_alert",
+            "category": "revenue",
+            "severity": "warning",
+            "title": f"Revenue Declined {abs(rev_change_pct)}% vs Previous Period",
+            "detail": f"Verified net revenue is Rs.{net_sales:.2f} compared to Rs.{prev_rev:.2f} in {prev_start.isoformat()} to {prev_end.isoformat()}.",
+            "metric_label": f"{rev_change_pct}%",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders"},
+        })
+    elif rev_change_pct is not None and rev_change_pct >= 15.0:
+        business_insights.append({
+            "id": "revenue_growth_highlight",
+            "category": "revenue",
+            "severity": "positive",
+            "title": f"Revenue Grew +{rev_change_pct}% vs Previous Period",
+            "detail": f"Verified net revenue rose from Rs.{prev_rev:.2f} to Rs.{net_sales:.2f} across {total_orders} paid orders.",
+            "metric_label": f"+{rev_change_pct}%",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders"},
+        })
+    if top_items:
+        best = top_items[0]
+        zero_sellers = [x for x in least_ordered_items if x["quantity_sold"] == 0]
+        business_insights.append({
+            "id": "product_performance_split",
+            "category": "product",
+            "severity": "positive" if not zero_sellers else "info",
+            "title": f"Top Seller: {best['item_name']} ({best['quantity_sold']} sold)",
+            "detail": (
+                f"{best['item_name']} generated Rs.{best['revenue']:.2f}."
+                + (f" {len(zero_sellers)} active menu item(s) had 0 orders in this window." if zero_sellers else "")
+            ),
+            "metric_label": f"Rs.{best['revenue']:.2f}",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "items"},
+        })
+    if low_stock_rows or out_of_stock_items:
+        business_insights.append({
+            "id": "inventory_and_stockouts",
+            "category": "inventory",
+            "severity": "critical" if len(out_of_stock_items) > 0 else "warning",
+            "title": f"{len(low_stock_rows)} Low-Stock Ingredients & {len(out_of_stock_items)} Unavailable Dishes",
+            "detail": "Replenish low-stock ingredients promptly to prevent recipe auto-blocks on peak items.",
+            "metric_label": f"{len(low_stock_rows)} alerts",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "inventory", "low_only": True},
+        })
+    if cancellation_rate_percent >= 10.0 and cancelled_orders >= 2:
+        business_insights.append({
+            "id": "cancellation_spike",
+            "category": "operations",
+            "severity": "critical",
+            "title": f"Elevated Cancellation Rate ({cancellation_rate_percent}%)",
+            "detail": f"{cancelled_orders} of {total_created_orders} orders in the selected range were cancelled or rejected.",
+            "metric_label": f"{cancelled_orders} cancelled",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders", "status": "CANCELLED"},
+        })
+    if delayed_orders > 0 or (prep_durations and (sum(prep_durations) / len(prep_durations)) > 15.0):
+        avg_p = round(sum(prep_durations) / len(prep_durations), 1) if prep_durations else 0.0
+        business_insights.append({
+            "id": "prep_delay_alert",
+            "category": "operations",
+            "severity": "warning",
+            "title": f"Preparation Delays Detected ({delayed_orders} delayed, avg {avg_p}m)",
+            "detail": "Review kitchen station assignments and prep batching during peak windows.",
+            "metric_label": f"{delayed_orders} delayed",
+            "classification": "db_rule_insight",
+            "drilldown": {"tab": "orders", "delayed_only": True},
+        })
+
+    generated_at_iso = datetime.now(timezone.utc).isoformat()
     report_payload = {
         "range": {"start_date": s_date.isoformat(), "end_date": e_date.isoformat(), "preset": resolved_preset},
         "filters": {
@@ -776,11 +1080,27 @@ def get_analytics_report(
             "food_item_id": str(food_item_id) if food_item_id else None,
             "compare_previous": compare_previous,
         },
+        "generated_at": generated_at_iso,
+        "timezone": college_tz.key if hasattr(college_tz, "key") else str(college_tz),
+        "data_source": "PostgreSQL / Neon real-time SQL aggregation (excludes unpaid & failed transactions from revenue)",
+        "metric_definitions": {
+            "gross_sales": "Sum of subtotal_amount across payment_status='CONFIRMED' orders in the selected date window.",
+            "collected_payments": "Sum of Payment.amount across confirmed gateway/POS Payment records in the date window.",
+            "refunds_amount": "Always 0.00 under CollegeBites strict no-in-app-refund policy.",
+            "net_revenue": "Sum of Order.total_amount on confirmed orders minus refunds (excludes unpaid/failed attempts).",
+            "cancellation_rate_percent": "Cancelled + Rejected orders divided by all orders created in the date window.",
+            "payment_success_rate_percent": "Confirmed Payment attempts divided by total Payment attempts created in window.",
+            "avg_fulfilment_minutes": "Mean elapsed minutes from payment confirmation (confirmed_at) to handover completion (completed_at).",
+            "repeat_purchase_rate_percent": "Percentage of active ordering registered customers with >1 confirmed order in range.",
+        },
         "empty": total_orders == 0,
-        "empty_message": "No data available for the selected date range." if total_orders == 0 else None,
+        "empty_message": "No data available (no confirmed orders for the selected date range)." if total_orders == 0 else None,
         "data_classification": "actual",
         "financial_analytics": {
             "verified_gross_sales": f"{Decimal(str(gross_sales)):.2f}",
+            "collected_payments": f"{collected_payments:.2f}",
+            "refunds_amount": f"{refunds_amount:.2f}",
+            "no_refund_policy_enforced": True,
             "historical_discounts": f"{Decimal(str(discounts)):.2f}",
             "historical_taxes": f"{Decimal(str(tax_collected)):.2f}",
             "verified_net_revenue": f"{Decimal(str(net_sales)):.2f}",
@@ -806,7 +1126,10 @@ def get_analytics_report(
         },
         "sales": {
             "total_orders": int(total_orders),
+            "total_created_orders": int(total_created_orders),
             "gross_sales": f"{Decimal(str(gross_sales)):.2f}",
+            "collected_payments": f"{collected_payments:.2f}",
+            "refunds": f"{refunds_amount:.2f}",
             "discounts": f"{Decimal(str(discounts)):.2f}",
             "tax_collected": f"{Decimal(str(tax_collected)):.2f}",
             "net_sales": f"{Decimal(str(net_sales)):.2f}",
@@ -815,8 +1138,14 @@ def get_analytics_report(
             "weekly_series": weekly_series,
             "monthly_series": monthly_series,
             "hourly_series": hourly_series,
+            "weekday_series": weekday_series,
+            "hourly_heatmap": hourly_heatmap,
             "top_items": top_items,
             "least_ordered_items": least_ordered_items,
+            "out_of_stock_items": out_of_stock_items,
+            "product_demand_trends": product_demand_trends,
+            "product_demand_trend_keys": top_5_names,
+            "frequent_combinations": frequent_combinations,
             "category_sales": category_sales,
             "counter_sales": counter_sales,
             "counter_performance": counter_performance,
@@ -836,12 +1165,14 @@ def get_analytics_report(
         "operations": {
             "completed_orders": int(completed_orders),
             "cancelled_orders": int(cancelled_orders),
+            "cancellation_rate_percent": cancellation_rate_percent,
             "pending_orders": int(pending_orders),
             "delayed_orders": int(delayed_orders),
             "completion_rate_percent": completion_rate,
             "avg_prep_minutes": round(sum(prep_durations) / len(prep_durations), 1) if prep_durations else 0.0,
             "avg_pickup_wait_minutes": round(sum(wait_durations) / len(wait_durations), 1) if wait_durations else 0.0,
             "avg_completion_minutes": round(sum(completion_durations) / len(completion_durations), 1) if completion_durations else 0.0,
+            "avg_fulfilment_minutes": round(sum(completion_durations) / len(completion_durations), 1) if completion_durations else 0.0,
             "kitchen_workload_percent": round(
                 min(100.0, (active_pending_orders / max(1, sum(c["max_queue_capacity"] for c in counter_performance) or 25)) * 100.0),
                 1,
@@ -852,6 +1183,8 @@ def get_analytics_report(
             "tracked_ingredients": len(inv_rows),
             "low_stock_count": len(low_stock_rows),
             "low_stock_items": low_stock_items,
+            "out_of_stock_products_count": len(out_of_stock_items),
+            "out_of_stock_products": out_of_stock_items,
             "expiring_within_7_days": int(expiring_count),
             "total_wastage_loss": f"{Decimal(str(total_wastage)):.2f}",
             "wastage_breakdown": wastage_breakdown,
@@ -861,11 +1194,17 @@ def get_analytics_report(
         },
         "customers": {
             "registered_customers": int(total_customers),
-            "active_ordering_customers": len(cust_order_counts),
+            "new_customers": int(new_customers),
+            "active_ordering_customers": active_cust_cnt,
             "returning_customers": returning_customers,
             "repeat_order_rate_percent": repeat_rate,
+            "avg_customer_spending": f"{avg_customer_spending:.2f}",
             "average_food_rating": round(float(avg_rating), 2),
+            "review_count": len(rev_rows),
+            "rating_distribution": rating_dist,
+            "satisfaction_trends": satisfaction_trends,
         },
+        "business_insights": business_insights,
         "support": {
             "total_tickets": len(tickets),
             "open_tickets": open_tickets,
@@ -895,6 +1234,11 @@ def get_order_details_page(
     end_date: Optional[date] = None,
     status_filter: Optional[str] = None,
     q: Optional[str] = None,
+    hour_filter: Optional[int] = None,
+    weekday_filter: Optional[int] = None,
+    payment_method_filter: Optional[str] = None,
+    food_item_id: Optional[UUID] = None,
+    delayed_only: bool = False,
     page: int = 1,
     page_size: int = 15,
 ) -> dict[str, Any]:
@@ -907,7 +1251,17 @@ def get_order_details_page(
     if canteen_id:
         filters.append(Order.canteen_id == canteen_id)
     if status_filter and status_filter.strip():
-        filters.append(Order.status == status_filter.strip())
+        st_u = status_filter.strip().upper()
+        if st_u == "CANCELLED":
+            filters.append(Order.status.in_(("CANCELLED", "REJECTED")))
+        else:
+            filters.append(Order.status == st_u)
+    if payment_method_filter and payment_method_filter.strip():
+        filters.append(Order.payment_method == payment_method_filter.strip().lower())
+    if food_item_id:
+        filters.append(Order.id.in_(select(OrderItem.order_id).where(OrderItem.food_item_id == food_item_id)))
+    if delayed_only:
+        filters.append(Order.delayed_minutes > 0)
     if q and q.strip():
         like = f"%{q.strip()}%"
         filters.append(
@@ -917,6 +1271,17 @@ def get_order_details_page(
                 Order.payment_method.ilike(like),
             )
         )
+
+    if hour_filter is not None or weekday_filter is not None:
+        id_ts_rows = db.execute(select(Order.id, Order.created_at).where(*filters)).all()
+        matching_ids = [
+            oid
+            for oid, cts in id_ts_rows
+            if cts
+            and (hour_filter is None or _to_local_dt(cts, college_tz).hour == hour_filter)
+            and (weekday_filter is None or _to_local_dt(cts, college_tz).weekday() == weekday_filter)
+        ]
+        filters = [Order.id.in_(matching_ids)] if matching_ids else [Order.id.is_(None)]
 
     total = db.scalar(select(func.count(Order.id)).where(*filters)) or 0
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -1383,7 +1748,8 @@ def export_report_csv(report: dict[str, Any]) -> str:
     writer.writerow([])
     writer.writerow(["CUSTOMER METRICS"])
     for k, v in report.get("customers", {}).items():
-        writer.writerow([k, v])
+        if not isinstance(v, (list, dict)):
+            writer.writerow([k, v])
     writer.writerow([])
     writer.writerow(["SUPPORT METRICS"])
     for k, v in report.get("support", {}).items():

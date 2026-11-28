@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.http_cache import apply_etag_and_check_304, set_private_no_store
+from app.core.http_cache import set_private_no_store
 from app.core.permissions import (
     ROLE_CANTEEN_MANAGER,
     ROLE_CASHIER,
@@ -17,6 +17,7 @@ from app.core.permissions import (
     enforce_canteen_scope,
     require_roles,
     scoped_canteen_for_principal,
+    scoped_counter_for_principal,
 )
 from app.models.order import Order
 from app.schemas.operations import (
@@ -70,27 +71,28 @@ def confirm_handover(
 
 @router.get("/board", response_model=DigitalBoardResponse)
 def get_digital_board_all_or_filtered(
-    request: Request,
     response: Response,
     canteen_id: Optional[UUID] = Query(default=None),
+    principal: AuthenticatedPrincipal = Depends(require_roles(*TOKEN_BOARD_STAFF_ROLES)),
     db: Session = Depends(get_db),
 ):
-    snap = pickup_service.get_digital_token_board(db, canteen_id)
-    seed = snap.version or snap.model_dump(mode="json")
-    not_mod = apply_etag_and_check_304(request, response, seed, s_maxage=2, swr=4)
-    if not_mod is not None:
-        return not_mod
-    return snap
+    set_private_no_store(response)
+    scoped_canteen = scoped_canteen_for_principal(principal, canteen_id)
+    counter_lock = scoped_counter_for_principal(principal)
+    return pickup_service.get_digital_token_board(db, scoped_canteen, counter_id=counter_lock)
 
 
 @router.get("/board/{canteen_id}", response_model=DigitalBoardResponse)
-def get_digital_board(canteen_id: UUID, request: Request, response: Response, db: Session = Depends(get_db)):
-    snap = pickup_service.get_digital_token_board(db, canteen_id)
-    seed = snap.version or snap.model_dump(mode="json")
-    not_mod = apply_etag_and_check_304(request, response, seed, s_maxage=2, swr=4)
-    if not_mod is not None:
-        return not_mod
-    return snap
+def get_digital_board(
+    canteen_id: UUID,
+    response: Response,
+    principal: AuthenticatedPrincipal = Depends(require_roles(*TOKEN_BOARD_STAFF_ROLES)),
+    db: Session = Depends(get_db),
+):
+    set_private_no_store(response)
+    scoped_canteen = scoped_canteen_for_principal(principal, canteen_id)
+    counter_lock = scoped_counter_for_principal(principal)
+    return pickup_service.get_digital_token_board(db, scoped_canteen, counter_id=counter_lock)
 
 
 @router.get("/token-board", response_model=OperationalTokenBoardResponse)
@@ -102,4 +104,5 @@ def get_operational_token_board(
 ):
     set_private_no_store(response)
     scoped_canteen = scoped_canteen_for_principal(principal, canteen_id)
-    return pickup_service.get_operational_token_board(db, scoped_canteen)
+    counter_lock = scoped_counter_for_principal(principal)
+    return pickup_service.get_operational_token_board(db, scoped_canteen, counter_id=counter_lock)

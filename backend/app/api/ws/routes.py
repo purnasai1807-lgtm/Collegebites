@@ -211,12 +211,22 @@ async def ws_kitchen(websocket: WebSocket, canteen_id: str):
 
 @router.websocket("/ws/board/{canteen_id}")
 async def ws_board(websocket: WebSocket, canteen_id: str):
+    principal = _authenticate_jwt_from_ws(websocket)
+    if not principal or not principal.has_role(*STAFF_ROLES):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     if canteen_id == "all":
+        if not principal.has_role(ROLE_SUPER_ADMIN, ROLE_COLLEGE_ADMIN):
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
         await _serve_room("board:all", websocket, watch_kind="board", target_id=None)
         return
     try:
         target = UUID(canteen_id)
     except ValueError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    if not principal.has_role(ROLE_SUPER_ADMIN, ROLE_COLLEGE_ADMIN) and principal.assigned_canteen_id != target:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     await _serve_room(f"board:{canteen_id}", websocket, watch_kind="board", target_id=target)

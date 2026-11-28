@@ -475,7 +475,7 @@ def seed_initial_college_data(db: Session, create_demo_users: bool = True) -> di
             ("superadmin@collegebites.edu", "+919000000001", "Super Admin", "Admin@12345", "admin", ["super_admin"], None, None),
             ("admin@collegebites.edu", "+919000000002", "College Canteen Admin", "Admin@12345", "admin", ["college_admin"], None, None),
             ("manager@collegebites.edu", "+919000000003", "Main Canteen Manager", "Staff@12345", "staff", ["canteen_manager"], main_canteen.id, None),
-            ("cashier@collegebites.edu", "+919000000004", "Counter Cashier", "Staff@12345", "staff", ["cashier"], main_canteen.id, main_c1.id),
+            ("cashier@collegebites.edu", "+919000000004", "Counter Cashier", "Staff@12345", "staff", ["cashier"], main_canteen.id, None),
             ("kitchen@collegebites.edu", "+919000000005", "Head Chef", "Staff@12345", "staff", ["kitchen_staff"], main_canteen.id, None),
             ("inventory@collegebites.edu", "+919000000006", "Inventory Lead", "Staff@12345", "staff", ["inventory_manager"], main_canteen.id, None),
             ("pickup@collegebites.edu", "+919000000007", "Pickup Counter Staff", "Staff@12345", "staff", ["pickup_staff"], main_canteen.id, main_c2.id),

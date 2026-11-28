@@ -215,6 +215,7 @@ class AuthenticatedPrincipal:
     roles: set[str]
     permissions: set[str]
     assigned_canteen_id: Optional[UUID]
+    assigned_counter_id: Optional[UUID] = None
 
     def has_role(self, *role_names: str) -> bool:
         return bool(self.roles.intersection(role_names))
@@ -434,12 +435,18 @@ def get_optional_principal(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account inactive or missing")
 
     roles, permissions, assigned_canteen_id = load_user_roles_and_permissions(db, user.id)
+    assigned_counter_id: Optional[UUID] = None
+    if not roles.intersection({ROLE_SUPER_ADMIN, ROLE_COLLEGE_ADMIN, ROLE_CANTEEN_MANAGER}) and roles.intersection(
+        {ROLE_CASHIER, ROLE_KITCHEN_STAFF, ROLE_PICKUP_STAFF}
+    ):
+        assigned_counter_id = db.scalar(select(StaffProfile.assigned_counter_id).where(StaffProfile.user_id == user.id))
     return AuthenticatedPrincipal(
         user=user,
         session_id=session_id,
         roles=roles,
         permissions=permissions,
         assigned_canteen_id=assigned_canteen_id,
+        assigned_counter_id=assigned_counter_id,
     )
 
 
@@ -518,6 +525,13 @@ def scoped_canteen_for_principal(principal: AuthenticatedPrincipal, requested_ca
         return requested_canteen_id
     enforce_canteen_scope(principal, requested_canteen_id)
     return principal.assigned_canteen_id
+
+
+def scoped_counter_for_principal(principal: Optional[AuthenticatedPrincipal]) -> Optional[UUID]:
+    """Return assigned counter lock for counter-bound operational staff (None if admin/manager/canteen-wide)."""
+    if not principal or principal.has_role(ROLE_SUPER_ADMIN, ROLE_COLLEGE_ADMIN, ROLE_CANTEEN_MANAGER):
+        return None
+    return principal.assigned_counter_id
 
 
 def client_ip_from_request(request: Optional[Request]) -> Optional[str]:

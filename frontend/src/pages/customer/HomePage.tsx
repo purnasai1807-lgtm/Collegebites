@@ -268,10 +268,10 @@ export const HomePage: React.FC = () => {
   const cartCount = cart?.items?.reduce((s, i) => s + i.quantity, 0) || 0;
 
   const { data: myOrders = [] } = useQuery<any[]>({
-    queryKey: ["my-orders"],
-    enabled: Boolean(user),
+    queryKey: ["my-orders", user?.id],
+    enabled: Boolean(user?.id),
     staleTime: 20_000,
-    queryFn: async () => (await api.get("/orders/my?limit=15")).data,
+    queryFn: async () => (await api.get("/orders/my-orders?limit=15")).data,
     refetchInterval: (query) => {
       if (!isOnline) return false;
       const list = (query.state.data as any[]) || [];

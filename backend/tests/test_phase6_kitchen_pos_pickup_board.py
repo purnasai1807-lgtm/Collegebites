@@ -70,13 +70,15 @@ def test_kitchen_lifecycle_qr_verification_cases_handover_and_digital_board(clie
     assert client.post(f"/api/v1/kitchen/orders/{order['id']}/accept", headers=kitchen["headers"]).status_code == 200
     assert client.post(f"/api/v1/kitchen/orders/{order['id']}/start-preparing", headers=kitchen["headers"]).status_code == 200
 
-    # Digital board shows NOW PREPARING without private PII
-    board_prep = client.get(f"/api/v1/pickup/board/{canteen['id']}").json()
+    # Operational staff board shows NOW PREPARING without private PII (blocked for unauthenticated/student callers)
+    assert client.get(f"/api/v1/pickup/board/{canteen['id']}").status_code == 401
+    assert client.get(f"/api/v1/pickup/board/{canteen['id']}", headers=student["headers"]).status_code == 403
+    board_prep = client.get(f"/api/v1/pickup/board/{canteen['id']}", headers=pickup["headers"]).json()
     assert any(t["token_code"] == token for t in board_prep["now_preparing"])
     assert "guest_phone" not in str(board_prep)
 
     assert client.post(f"/api/v1/kitchen/orders/{order['id']}/mark-ready", headers=kitchen["headers"]).status_code == 200
-    board_ready = client.get(f"/api/v1/pickup/board/{canteen['id']}").json()
+    board_ready = client.get(f"/api/v1/pickup/board/{canteen['id']}", headers=pickup["headers"]).json()
     assert any(t["token_code"] == token for t in board_ready["ready_for_pickup"])
 
     # 5. Wrong counter check

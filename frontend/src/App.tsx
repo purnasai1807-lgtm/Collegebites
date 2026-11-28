@@ -168,12 +168,54 @@ export function App() {
                       </RequireRole>
                     }
                   />
-                  <Route path="/board" element={<TokenBoardPage />} />
-                  <Route path="/board/:canteenId" element={<TokenBoardPage />} />
-                  <Route path="/display" element={<TokenBoardPage />} />
-                  <Route path="/display/:canteenId" element={<TokenBoardPage />} />
-                  <Route path="/tv" element={<TokenBoardPage />} />
-                  <Route path="/tv/:canteenId" element={<TokenBoardPage />} />
+                  <Route
+                    path="/board"
+                    element={
+                      <RequireRole allowed={["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]}>
+                        <TokenBoardPage />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/board/:canteenId"
+                    element={
+                      <RequireRole allowed={["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]}>
+                        <TokenBoardPage />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/display"
+                    element={
+                      <RequireRole allowed={["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]}>
+                        <TokenBoardPage />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/display/:canteenId"
+                    element={
+                      <RequireRole allowed={["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]}>
+                        <TokenBoardPage />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/tv"
+                    element={
+                      <RequireRole allowed={["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]}>
+                        <TokenBoardPage />
+                      </RequireRole>
+                    }
+                  />
+                  <Route
+                    path="/tv/:canteenId"
+                    element={
+                      <RequireRole allowed={["canteen_manager", "kitchen_staff", "pickup_staff", "cashier", "college_admin"]}>
+                        <TokenBoardPage />
+                      </RequireRole>
+                    }
+                  />
                   <Route
                     path="/token-board"
                     element={

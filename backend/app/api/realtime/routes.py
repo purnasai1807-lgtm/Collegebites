@@ -234,13 +234,17 @@ async def stream_digital_board(
     once: bool = Query(default=False),
     max_seconds: Optional[float] = Query(default=None, ge=0.2, le=55.0),
     last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
+    principal: AuthenticatedPrincipal = Depends(require_roles(*TOKEN_BOARD_ROLES)),
+    db: Session = Depends(get_db),
 ):
-    """Server-Sent Events stream for public TV Pickup Display synchronization."""
-    if canteen_id is not None:
+    """Private Server-Sent Events stream for authenticated staff Token Display synchronization."""
+    scoped_canteen = scoped_canteen_for_principal(principal, canteen_id)
+    _release_request_db_before_stream(request, db)
+    if scoped_canteen is not None:
         def _validate_canteen() -> bool:
             gen, sess = realtime_service.resolve_db_session(request)
             try:
-                return sess.get(Canteen, canteen_id) is not None
+                return sess.get(Canteen, scoped_canteen) is not None
             finally:
                 realtime_service.close_db_session(gen)
 
@@ -248,20 +252,20 @@ async def stream_digital_board(
             raise HTTPException(status_code=404, detail="Canteen not found")
 
     def _fetch(sess: Session) -> tuple[Optional[str], Optional[dict[str, Any]]]:
-        snap = realtime_service.fetch_board_snapshot(sess, canteen_id)
+        snap = realtime_service.fetch_board_snapshot(sess, scoped_canteen)
         return snap.version, snap.model_dump(mode="json")
 
     return _stream_with_watermark(
         request=request,
-        topic=f"board:{canteen_id}" if canteen_id is not None else "board:all",
+        topic=f"board:{scoped_canteen}" if scoped_canteen is not None else "board:all",
         event_name="board.snapshot",
         last_version=last_version,
         last_event_id=last_event_id,
         once=once,
         max_seconds=max_seconds,
-        compute_version=lambda sess: realtime_service.compute_board_watermark(sess, canteen_id),
+        compute_version=lambda sess: realtime_service.compute_board_watermark(sess, scoped_canteen),
         fetch_payload=_fetch,
-        is_private=False,
+        is_private=True,
     )
 
 

@@ -1,26 +1,63 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Receipt, RotateCcw, Search } from "lucide-react";
+import { ArrowRight, Download, Eye, Lock, Receipt, RotateCcw, Search } from "lucide-react";
 import { api, getApiError } from "../../api/client";
 import { useAppStore } from "../../store/useAppStore";
 import { useOfflineStore } from "../../store/useOfflineStore";
 import { fetchWithOfflineCache } from "../../utils/offlineSync";
-import type { Order } from "../../types";
+import type { Order, ReceiptSnapshot } from "../../types";
+import { ReceiptSlip } from "../../components/receipt/ReceiptSlip";
 import { BrandEmptyState, BrandLoadingState } from "../../components/branding/BrandLogo";
-import { Badge, Button, Card, Input, useToast } from "../../components/ui/Primitives";
+import { Badge, Button, Card, Input, Modal, useToast } from "../../components/ui/Primitives";
+
+interface PrivateReceiptSummary {
+  receipt_id: string;
+  receipt_number: string;
+  order_id: string;
+  order_number: string;
+  canteen_name: string;
+  counter_name: string;
+  order_status: string;
+  payment_status: string;
+  payment_method: string;
+  total_paid: string;
+  pickup_token?: string;
+  order_date?: string;
+  order_time?: string;
+  reprint_count: number;
+  items: Array<{ item_name: string; quantity: number; line_total: string }>;
+  created_at?: string;
+}
 
 export const MyOrdersPage: React.FC = () => {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { pushToast } = useToast();
-  const { user, guestOrderTokens, saveGuestOrderToken, setSelectedCanteen } = useAppStore();
-  const [lookupOrderNum, setLookupOrderNum] = useState("");
-  const [lookupToken, setLookupToken] = useState("");
-  const [guestPhone, setGuestPhone] = useState("");
-  const [recoveredOrders, setRecoveredOrders] = useState<Order[]>([]);
+  const { user, setSelectedCanteen } = useAppStore();
+  const isOnline = useOfflineStore((s) => s.isOnline);
+
+  const [viewMode, setViewMode] = useState<"receipts" | "orders">("receipts");
   const [historyFilter, setHistoryFilter] = useState<"all" | "active" | "completed" | "cancelled">("all");
   const [historySearch, setHistorySearch] = useState("");
+  const [selectedReceipt, setSelectedReceipt] = useState<ReceiptSnapshot | null>(null);
+  const [loadingReceiptId, setLoadingReceiptId] = useState<string | null>(null);
+
+  const { data: orders = [], isLoading: ordersLoading } = useQuery<Order[]>({
+    queryKey: ["my-orders", user?.id],
+    enabled: Boolean(user?.id),
+    queryFn: () =>
+      fetchWithOfflineCache(`orders:my:${user?.id}`, async () => (await api.get("/orders/my-orders")).data),
+    refetchInterval: isOnline ? 15000 : false,
+  });
+
+  const { data: myReceipts = [], isLoading: receiptsLoading } = useQuery<PrivateReceiptSummary[]>({
+    queryKey: ["my-receipts", user?.id],
+    enabled: Boolean(user?.id),
+    queryFn: () =>
+      fetchWithOfflineCache(`receipt:my:${user?.id}`, async () => (await api.get("/tokens/receipts/my")).data),
+    refetchInterval: isOnline ? 20000 : false,
+  });
 
   const handleReorder = async (o: Order) => {
     try {
@@ -76,19 +113,78 @@ export const MyOrdersPage: React.FC = () => {
     }
   };
 
-  const isOnline = useOfflineStore((s) => s.isOnline);
-  const { data: orders = [], isLoading } = useQuery<Order[]>({
-    queryKey: ["my-orders"],
-    enabled: Boolean(user),
-    queryFn: () => fetchWithOfflineCache("orders:my", async () => (await api.get("/orders/my")).data),
-    refetchInterval: isOnline ? 15000 : false,
+  const handleViewPrivateReceipt = async (receiptOrOrderId: string) => {
+    setLoadingReceiptId(receiptOrOrderId);
+    try {
+      const res = await api.get<ReceiptSnapshot>(`/tokens/receipts/${encodeURIComponent(receiptOrOrderId)}`);
+      setSelectedReceipt(res.data);
+    } catch (err) {
+      pushToast(getApiError(err, "Could not load your private receipt"), "error");
+    } finally {
+      setLoadingReceiptId(null);
+    }
+  };
+
+  const handleDownloadPrivateReceiptPdf = async (receiptOrOrderId: string, orderNumber: string) => {
+    try {
+      const res = await api.get(`/tokens/receipts/${encodeURIComponent(receiptOrOrderId)}/pdf?format=a4`, {
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `CollegeBites-${orderNumber}-a4.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      pushToast(getApiError(err, "Failed to download receipt PDF"), "error");
+    }
+  };
+
+  if (!user) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-14">
+        <Card className="p-8 text-center space-y-4">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#fdf8f0] border border-[#76010d]/20 text-[#76010d]">
+            <Lock className="h-6 w-6" />
+          </div>
+          <h1 className="text-2xl font-extrabold text-slate-900">Sign In to Access My Orders &amp; Receipts</h1>
+          <p className="text-sm text-slate-600 max-w-md mx-auto">
+            Order tokens and receipts in CollegeBites are strictly private to each student account. Public token lists
+            are disabled to protect student order and payment privacy.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <Link to="/login">
+              <Button>Sign In to View My Receipts</Button>
+            </Link>
+            <Link to="/register">
+              <Button variant="outline">Create Student Account</Button>
+            </Link>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  const q = historySearch.trim().toLowerCase();
+  const filteredReceipts = myReceipts.filter((r) => {
+    if (!q) return true;
+    return (
+      r.order_number.toLowerCase().includes(q) ||
+      r.receipt_number.toLowerCase().includes(q) ||
+      (r.pickup_token || "").toLowerCase().includes(q) ||
+      r.items.some((i) => i.item_name.toLowerCase().includes(q))
+    );
   });
 
   const filteredOrders = orders.filter((o) => {
-    if (historyFilter === "active" && !["PAYMENT_PENDING", "PAYMENT_CONFIRMED", "PLACED", "ACCEPTED", "PREPARING", "READY"].includes(o.status)) return false;
+    if (
+      historyFilter === "active" &&
+      !["PAYMENT_PENDING", "PAYMENT_CONFIRMED", "PLACED", "ACCEPTED", "PREPARING", "READY"].includes(o.status)
+    )
+      return false;
     if (historyFilter === "completed" && o.status !== "COMPLETED") return false;
     if (historyFilter === "cancelled" && !["CANCELLED", "REJECTED", "PAYMENT_FAILED"].includes(o.status)) return false;
-    const q = historySearch.trim().toLowerCase();
     if (!q) return true;
     return (
       o.order_number.toLowerCase().includes(q) ||
@@ -97,211 +193,214 @@ export const MyOrdersPage: React.FC = () => {
     );
   });
 
-  const savedGuestEntries = Object.entries(guestOrderTokens);
-
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900">Your Orders & Receipts</h1>
-          <p className="text-xs text-slate-500">Track live preparation, view pickup QR tokens, and reprint receipts</p>
+          <h1 className="text-2xl font-extrabold text-slate-900">My Orders &amp; My Receipts</h1>
+          <p className="text-xs text-slate-500">
+            Account-exclusive view for {user.full_name} — only your personal orders, receipts, and payment status are accessible.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={viewMode === "receipts" ? "primary" : "outline"}
+            onClick={() => setViewMode("receipts")}
+          >
+            <Receipt className="h-3.5 w-3.5" /> My Receipts ({myReceipts.length})
+          </Button>
+          <Button
+            size="sm"
+            variant={viewMode === "orders" ? "primary" : "outline"}
+            onClick={() => setViewMode("orders")}
+          >
+            My Orders ({orders.length})
+          </Button>
         </div>
       </div>
 
-      {/* Guest Order Lookup */}
-      <Card className="p-4">
-        <div className="text-xs font-bold uppercase text-slate-500 mb-2">Track a Guest Order</div>
-        <div className="grid gap-2 sm:grid-cols-3">
-          <Input
-            value={lookupOrderNum}
-            onChange={(e) => setLookupOrderNum(e.target.value)}
-            placeholder="Order No (e.g. CB-20261121-000001)"
-          />
-          <Input
-            value={lookupToken}
-            onChange={(e) => setLookupToken(e.target.value)}
-            placeholder="Guest Token (optional if saved on device)"
-          />
-          <Button
-            onClick={() => {
-              if (!lookupOrderNum.trim()) return;
-              const q = lookupToken.trim() ? `?guest_token=${encodeURIComponent(lookupToken.trim())}` : "";
-              navigate(`/orders/${lookupOrderNum.trim()}${q}`);
-            }}
-          >
-            <Search className="h-4 w-4" /> Track Order
-          </Button>
-        </div>
-
-        {savedGuestEntries.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {savedGuestEntries.map(([ordNo]) => (
-              <Link
-                key={ordNo}
-                to={`/orders/${ordNo}`}
-                className="inline-flex items-center gap-1 rounded-full bg-[#fdf8f0] border border-[#76010d]/25 px-3 py-1 text-xs font-bold text-[#76010d]"
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {viewMode === "orders" ? (
+          <div className="flex flex-wrap gap-1.5">
+            {(["all", "active", "completed", "cancelled"] as const).map((tabKey) => (
+              <Button
+                key={tabKey}
+                size="sm"
+                variant={historyFilter === tabKey ? "secondary" : "outline"}
+                onClick={() => setHistoryFilter(tabKey)}
               >
-                <Receipt className="h-3 w-3" /> {ordNo}
-              </Link>
+                {tabKey === "all"
+                  ? "All Orders"
+                  : tabKey === "active"
+                  ? "Active"
+                  : tabKey === "completed"
+                  ? "Completed"
+                  : "Cancelled / Failed"}
+              </Button>
             ))}
           </div>
-        )}
-
-        <div className="mt-4 border-t border-slate-100 pt-3 space-y-2">
-          <div className="text-[11px] font-bold uppercase text-slate-500">Recover a Guest Order (Order Number + Contact)</div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <Input
-              aria-label="Guest order number"
-              value={lookupOrderNum}
-              onChange={(e) => setLookupOrderNum(e.target.value)}
-              placeholder="Order # (e.g. CB-2026...)"
-            />
-            <Input
-              aria-label="Guest mobile or email"
-              value={guestPhone}
-              onChange={(e) => setGuestPhone(e.target.value)}
-              placeholder="Guest Mobile or Email"
-            />
-            <Button
-              type="button"
-              size="sm"
-              disabled={!lookupOrderNum.trim() || !guestPhone.trim()}
-              onClick={async () => {
-                try {
-                  const list = await api.post<Order[]>("/orders/guest/lookup", {
-                    order_number: lookupOrderNum.trim(),
-                    guest_contact: guestPhone.trim(),
-                  });
-                  list.data.forEach((o) => {
-                    if (o.guest_access_token) saveGuestOrderToken(o.order_number, o.guest_access_token);
-                  });
-                  setRecoveredOrders(list.data);
-                  pushToast(`Found ${list.data.length} matching guest order(s)`, "success");
-                } catch (err) {
-                  pushToast(getApiError(err), "error");
-                }
-              }}
-            >
-              Find Guest Order
-            </Button>
+        ) : (
+          <div className="text-xs font-semibold text-slate-500">
+            Showing verified private receipts belonging only to your account
           </div>
-          {recoveredOrders.length > 0 && (
-            <div className="flex flex-wrap gap-2 pt-1">
-              {recoveredOrders.map((ro) => (
-                <Link
-                  key={ro.id}
-                  to={`/orders/${ro.order_number}${ro.guest_access_token ? `?guest_token=${encodeURIComponent(ro.guest_access_token)}` : ""}`}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-800"
-                >
-                  {ro.order_number} ({ro.status}) • ₹{ro.total_amount}
-                </Link>
-              ))}
-            </div>
-          )}
+        )}
+        <div className="relative w-64">
+          <Input
+            value={historySearch}
+            onChange={(e) => setHistorySearch(e.target.value)}
+            placeholder="Search order, receipt, or dish..."
+          />
+          <Search className="pointer-events-none absolute right-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
         </div>
-      </Card>
+      </div>
 
-      {user ? (
-        isLoading ? (
-          <BrandLoadingState message="Loading order history..." />
-        ) : orders.length === 0 ? (
+      {viewMode === "receipts" ? (
+        receiptsLoading ? (
+          <BrandLoadingState message="Loading your private receipts..." />
+        ) : filteredReceipts.length === 0 ? (
           <BrandEmptyState
-            title="No orders placed yet"
-            description="Explore campus canteens to customize a meal and generate your live QR pickup token."
+            title="No paid receipts yet"
+            description="Complete an order checkout to receive your private QR pickup receipt here."
             action={
               <Link to="/">
-                <Button size="sm">Browse menus →</Button>
+                <Button size="sm">Browse Menus →</Button>
               </Link>
             }
           />
         ) : (
           <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap gap-1.5">
-                {(["all", "active", "completed", "cancelled"] as const).map((tabKey) => (
+            {filteredReceipts.map((r) => (
+              <Card key={r.receipt_id} className="p-4 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-extrabold text-slate-900">{r.order_number}</span>
+                    <span className="text-xs font-mono text-slate-500">{r.receipt_number}</span>
+                    {r.pickup_token && <Badge tone="default">Token {r.pickup_token}</Badge>}
+                    <Badge tone={r.order_status === "COMPLETED" || r.order_status === "READY" ? "green" : "blue"}>
+                      Order: {r.order_status}
+                    </Badge>
+                    <Badge tone={r.payment_status === "CONFIRMED" ? "green" : "amber"}>
+                      Payment: {r.payment_status}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {r.canteen_name} / {r.counter_name} • {r.order_date} {r.order_time} •{" "}
+                    {r.items.map((i) => `${i.quantity}x ${i.item_name}`).join(", ")}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="mr-2 text-right">
+                    <div className="font-extrabold text-slate-900">₹{r.total_paid}</div>
+                    <div className="text-[11px] uppercase text-slate-500">{r.payment_method}</div>
+                  </div>
                   <Button
-                    key={tabKey}
                     size="sm"
-                    variant={historyFilter === tabKey ? "secondary" : "outline"}
-                    onClick={() => setHistoryFilter(tabKey)}
+                    variant="secondary"
+                    disabled={loadingReceiptId === r.receipt_id}
+                    onClick={() => void handleViewPrivateReceipt(r.receipt_id)}
                   >
-                    {tabKey === "all" ? "All Orders" : tabKey === "active" ? "Active" : tabKey === "completed" ? "Completed" : "Cancelled / Failed"}
+                    <Eye className="h-3.5 w-3.5" /> View Receipt
                   </Button>
-                ))}
-              </div>
-              <Input
-                value={historySearch}
-                onChange={(e) => setHistorySearch(e.target.value)}
-                placeholder="Search order, token, dish..."
-                className="w-56"
-              />
-            </div>
-
-            {filteredOrders.length === 0 ? (
-              <Card className="p-6 text-center text-xs text-slate-500">No orders matched the selected filter.</Card>
-            ) : (
-              filteredOrders.map((o) => (
-                <Card key={o.id} className="p-4 flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-extrabold text-slate-900">{o.order_number}</span>
-                      {o.pickup_token_code && <Badge tone="default">Token {o.pickup_token_code}</Badge>}
-                      <Badge tone={o.status === "COMPLETED" ? "green" : o.status === "READY" ? "green" : "blue"}>
-                        {o.status}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {o.canteen_name} / {o.counter_name} • {new Date(o.created_at).toLocaleString()} •{" "}
-                      {o.items.map((i) => `${i.quantity}x ${i.item_name}`).join(", ")}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="text-right">
-                      <div className="font-extrabold text-slate-900">₹{o.total_amount}</div>
-                      <div className="text-[11px] text-slate-500">{o.payment_status}</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="ghost" onClick={() => handleReorder(o)}>
-                        <RotateCcw className="h-3.5 w-3.5" /> Reorder
-                      </Button>
-                      {o.payment_status === "CONFIRMED" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={async () => {
-                            try {
-                              const res = await api.get(`/invoices/${o.id}/pdf`, { responseType: "blob" });
-                              const url = URL.createObjectURL(res.data);
-                              const a = document.createElement("a");
-                              a.href = url;
-                              a.download = `Invoice-${o.order_number}.pdf`;
-                              a.click();
-                              URL.revokeObjectURL(url);
-                            } catch (err) {
-                              pushToast(getApiError(err, "Failed to download tax invoice"), "error");
-                            }
-                          }}
-                        >
-                          <Receipt className="h-3.5 w-3.5" /> Tax Invoice PDF
-                        </Button>
-                      )}
-                      <Link to={`/orders/${o.order_number}`}>
-                        <Button size="sm" variant="outline">
-                          Receipt & Track <ArrowRight className="h-3.5 w-3.5" />
-                        </Button>
-                      </Link>
-                    </div>
-                  </div>
-                </Card>
-              ))
-            )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleDownloadPrivateReceiptPdf(r.receipt_id, r.order_number)}
+                  >
+                    <Download className="h-3.5 w-3.5" /> Download Receipt
+                  </Button>
+                  <Link to={`/orders/${r.order_number}`}>
+                    <Button size="sm" variant="ghost">
+                      Track <ArrowRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </Link>
+                </div>
+              </Card>
+            ))}
           </div>
         )
+      ) : ordersLoading ? (
+        <BrandLoadingState message="Loading your private order history..." />
+      ) : filteredOrders.length === 0 ? (
+        <BrandEmptyState
+          title="No matching orders"
+          description="Explore campus canteens to place your next meal order."
+          action={
+            <Link to="/">
+              <Button size="sm">Browse menus →</Button>
+            </Link>
+          }
+        />
       ) : (
-        <Card className="p-6 text-center text-sm text-slate-600">
-          Sign in to view your full order history across devices, or use the Guest Order tracker above.
-        </Card>
+        <div className="space-y-3">
+          {filteredOrders.map((o) => (
+            <Card key={o.id} className="p-4 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-extrabold text-slate-900">{o.order_number}</span>
+                  {o.pickup_token_code && <Badge tone="default">Token {o.pickup_token_code}</Badge>}
+                  <Badge tone={o.status === "COMPLETED" || o.status === "READY" ? "green" : "blue"}>
+                    Order: {o.status}
+                  </Badge>
+                  <Badge tone={o.payment_status === "CONFIRMED" ? "green" : "amber"}>
+                    Payment: {o.payment_status}
+                  </Badge>
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {o.canteen_name} / {o.counter_name} • {new Date(o.created_at).toLocaleString()} •{" "}
+                  {o.items.map((i) => `${i.quantity}x ${i.item_name}`).join(", ")}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="mr-2 text-right">
+                  <div className="font-extrabold text-slate-900">₹{o.total_amount}</div>
+                  <div className="text-[11px] uppercase text-slate-500">{o.payment_method}</div>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => void handleReorder(o)}>
+                  <RotateCcw className="h-3.5 w-3.5" /> Reorder
+                </Button>
+                {o.payment_status === "CONFIRMED" && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={loadingReceiptId === o.id}
+                      onClick={() => void handleViewPrivateReceipt(o.id)}
+                    >
+                      <Eye className="h-3.5 w-3.5" /> View Receipt
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleDownloadPrivateReceiptPdf(o.id, o.order_number)}
+                    >
+                      <Download className="h-3.5 w-3.5" /> Download Receipt
+                    </Button>
+                  </>
+                )}
+                <Link to={`/orders/${o.order_number}`}>
+                  <Button size="sm" variant="outline">
+                    Track <ArrowRight className="h-3.5 w-3.5" />
+                  </Button>
+                </Link>
+              </div>
+            </Card>
+          ))}
+        </div>
       )}
+
+      <Modal
+        open={Boolean(selectedReceipt)}
+        onClose={() => setSelectedReceipt(null)}
+        title={`Private Receipt • ${selectedReceipt?.order_number || ""}`}
+      >
+        {selectedReceipt && (
+          <ReceiptSlip
+            receipt={selectedReceipt}
+            onPrinted={() => void handleViewPrivateReceipt(selectedReceipt.order_number)}
+          />
+        )}
+      </Modal>
     </div>
   );
 };

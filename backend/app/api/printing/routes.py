@@ -1,11 +1,12 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.http_cache import set_private_no_store
 from app.core.permissions import (
     ROLE_CANTEEN_MANAGER,
     ROLE_CASHIER,
@@ -17,6 +18,7 @@ from app.core.permissions import (
     get_optional_principal,
     require_roles,
     scoped_canteen_for_principal,
+    scoped_counter_for_principal,
 )
 from app.models.order import Order
 from app.models.payment import ReceiptPrintHistory, ReceiptPrintJob
@@ -52,12 +54,14 @@ def _print_staff_cid(principal: Optional[AuthenticatedPrincipal]) -> Optional[UU
 @router.get("/receipts/{order_id_or_number}/escpos")
 def get_escpos_receipt(
     order_id_or_number: str,
+    response: Response,
     width: str = Query(default="80mm", pattern="^(58mm|80mm)$"),
     guest_token: Optional[str] = Query(default=None),
     x_guest_token: Optional[str] = Header(default=None),
     principal: Optional[AuthenticatedPrincipal] = Depends(get_optional_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     is_staff = bool(principal and principal.has_role(*STAFF_PRINT_ROLES))
     return receipt_service.get_escpos_payload(
         db,
@@ -66,6 +70,7 @@ def get_escpos_receipt(
         user_id=principal.user.id if principal else None,
         is_staff=is_staff,
         staff_canteen_id=_print_staff_cid(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
         guest_access_token=guest_token or x_guest_token,
     )
 
@@ -73,11 +78,13 @@ def get_escpos_receipt(
 @router.get("/kitchen-ticket/{order_id_or_number}/escpos")
 def get_escpos_kitchen_ticket(
     order_id_or_number: str,
+    response: Response,
     width: str = Query(default="80mm", pattern="^(58mm|80mm)$"),
     station_id: Optional[UUID] = Query(default=None),
     principal: AuthenticatedPrincipal = Depends(require_roles(*KOT_PRINT_ROLES)),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     scoped_cid = scoped_canteen_for_principal(principal, None)
     return receipt_service.get_kitchen_ticket_escpos_payload(
         db,
@@ -92,11 +99,13 @@ def get_escpos_kitchen_ticket(
 def print_receipt(
     order_id_or_number: str,
     payload: PrintReceiptRequest,
+    response: Response,
     guest_token: Optional[str] = Query(default=None),
     x_guest_token: Optional[str] = Header(default=None),
     principal: Optional[AuthenticatedPrincipal] = Depends(get_optional_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     is_staff = bool(principal and principal.has_role(*STAFF_PRINT_ROLES))
     actor_label = principal.user.full_name if principal else "Guest/Customer"
     job = receipt_service.trigger_print_job(
@@ -107,6 +116,7 @@ def print_receipt(
         actor_label=actor_label,
         is_staff=is_staff,
         staff_canteen_id=_print_staff_cid(principal),
+        staff_counter_id=scoped_counter_for_principal(principal) if is_staff else None,
         guest_access_token=guest_token or x_guest_token,
     )
     return receipt_service.serialize_print_job(db, job)

@@ -37,6 +37,9 @@ const MealPlansEventsInvoicesTab = lazy(() =>
 const ForecastingAssistantTab = lazy(() =>
   import("./components/ForecastingAssistantTab").then((m) => ({ default: m.ForecastingAssistantTab }))
 );
+const KitchenPrinterDashboardTab = lazy(() =>
+  import("../kitchen/components/KitchenPrinterDashboardTab").then((m) => ({ default: m.KitchenPrinterDashboardTab }))
+);
 
 const AdminPanelFallback = () => (
   <Card className="p-6 text-center text-xs text-slate-500">Loading operations module...</Card>
@@ -66,9 +69,10 @@ export const AdminConsolePage: React.FC = () => {
     | "reconciliation"
     | "security"
     | "backup"
+    | "printers"
     | "network"
     | "system"
-  >("control_center");
+  >("analytics");
 
   const { data: college, refetch: refetchCollege } = useQuery<CollegeSettings>({
     queryKey: ["college-settings"],
@@ -120,7 +124,7 @@ export const AdminConsolePage: React.FC = () => {
     queryKeys: [["admin-report"], ["admin-queue"], ["admin-all-orders"]],
   });
 
-  const { data: report, isLoading: reportLoading, isError: reportError } = useQuery<any>({
+  const { data: report, isLoading: reportLoading, isError: reportError, isFetching: reportFetching, refetch: refetchReport } = useQuery<any>({
     queryKey: [
       "admin-report",
       activeCanteenId,
@@ -232,10 +236,11 @@ export const AdminConsolePage: React.FC = () => {
 
       <div className="no-print flex flex-wrap gap-2">
         {[
+          { k: "analytics", l: "Enterprise BI Analytics" },
           { k: "control_center", l: "Control Center" },
-          { k: "analytics", l: "Analytics & Reports" },
           { k: "ai_forecast_assistant", l: "AI Forecasting & Assistant" },
           { k: "orders", l: "Orders & Users" },
+          { k: "printers", l: "Kitchen Printers" },
           { k: "meal_events_invoices", l: "Meal Plans, Events & Invoices" },
           { k: "locations", l: "Locations, Counters & Hours" },
           { k: "menu", l: "Menus & CSV" },
@@ -279,10 +284,24 @@ export const AdminConsolePage: React.FC = () => {
       )}
 
       {tab === "analytics" && reportLoading && !report && (
-        <Card className="p-6 text-center text-xs text-slate-500">Loading verified BI analytics report...</Card>
+        <Card className="space-y-3 p-6">
+          <div className="h-6 w-64 animate-pulse rounded bg-slate-200" />
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="h-24 animate-pulse rounded-xl bg-slate-100" />
+            <div className="h-24 animate-pulse rounded-xl bg-slate-100" />
+            <div className="h-24 animate-pulse rounded-xl bg-slate-100" />
+            <div className="h-24 animate-pulse rounded-xl bg-slate-100" />
+          </div>
+          <div className="h-56 animate-pulse rounded-xl bg-slate-100" />
+        </Card>
       )}
       {tab === "analytics" && reportError && !report && (
-        <Card className="p-4 border-red-200 bg-red-50 text-xs text-red-700">Failed to load BI analytics report.</Card>
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-red-200 bg-red-50 p-4 text-xs text-red-700">
+          <span>Failed to load verified Enterprise BI analytics report. Please retry.</span>
+          <Button variant="secondary" onClick={() => void refetchReport()}>
+            Retry Analytics Load
+          </Button>
+        </Card>
       )}
       {tab === "analytics" && report && (
         <Suspense fallback={<AdminPanelFallback />}>
@@ -307,7 +326,14 @@ export const AdminConsolePage: React.FC = () => {
             menuItems={menuItems}
             reportQueryCanteen={reportQueryCanteen}
             downloadBlob={downloadBlob}
+            onRefreshReport={() => void refetchReport()}
+            refreshing={reportFetching}
           />
+        </Suspense>
+      )}
+      {tab === "printers" && (
+        <Suspense fallback={<AdminPanelFallback />}>
+          <KitchenPrinterDashboardTab activeCanteenId={activeCanteenId} />
         </Suspense>
       )}
 

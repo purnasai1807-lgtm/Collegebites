@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.http_cache import set_private_no_store
 from app.core.permissions import (
     ROLE_CANTEEN_MANAGER,
     ROLE_CASHIER,
@@ -42,9 +43,11 @@ def list_all_invoices(
 
 @router.get("/my")
 def list_my_invoices(
+    response: Response,
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     return invoice_service.list_invoices(db, customer_user_id=principal.user.id)
 
 
@@ -62,20 +65,24 @@ def _authorize_invoice_access(
             return
         if inv.customer_user_id and inv.customer_user_id == principal.user.id:
             return
+        raise HTTPException(status_code=403, detail="Not authorized to access this invoice")
     if inv.order_id and guest_access_token:
         order = db.get(Order, inv.order_id)
         if order and order.is_guest and order.guest_access_token_hash == sha256_hex(guest_access_token):
             return
-    raise HTTPException(status_code=403, detail="Not authorized to access this invoice")
+        raise HTTPException(status_code=403, detail="Valid guest access token required")
+    raise HTTPException(status_code=401, detail="Authentication required to access this invoice")
 
 
 @router.get("/{id_or_number}")
 def get_invoice(
     id_or_number: str,
+    response: Response,
     guest_access_token: Optional[str] = Query(default=None),
     principal: Optional[AuthenticatedPrincipal] = Depends(get_optional_principal),
     db: Session = Depends(get_db),
 ):
+    set_private_no_store(response)
     inv = invoice_service.resolve_invoice(db, id_or_number)
     _authorize_invoice_access(db, inv, principal, guest_access_token)
     return invoice_service.serialize_invoice(inv)
@@ -94,5 +101,9 @@ def download_invoice_pdf(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{inv.invoice_number}.pdf"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{inv.invoice_number}.pdf"',
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
     )
