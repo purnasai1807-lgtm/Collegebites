@@ -1,14 +1,12 @@
 # 🍔 CollegeBites – Smart College Cafeteria Management System
 
-<p align="center">
-  <strong>A Smarter, Faster & More Efficient Digital Cafeteria Experience</strong>
-</p>
+### A Smarter, Faster & More Efficient Digital Cafeteria Experience
 
 CollegeBites is a web-based smart college cafeteria management and food-ordering platform designed to digitize and simplify traditional cafeteria operations.
 
 The platform connects students, cafeteria staff, kitchen teams, and administrators through a centralized digital system. It aims to make food ordering, payment processing, kitchen coordination, and order pickup more organized and efficient.
 
-CollegeBites is designed around **two cafeteria counters**, with centralized order and kitchen management.
+CollegeBites is designed around two cafeteria counters, with centralized order and kitchen management.
 
 ---
 
@@ -22,9 +20,12 @@ CollegeBites is designed around **two cafeteria counters**, with centralized ord
 - Improve operational visibility through dashboards and reports.
 - Build a scalable digital cafeteria solution.
 
+---
+
 ## ✨ Key Features
 
 ### 🛒 Digital Food Ordering
+
 - Digital cafeteria menu.
 - Food item details, prices, and availability.
 - Online order placement.
@@ -32,6 +33,7 @@ CollegeBites is designed around **two cafeteria counters**, with centralized ord
 - Order status tracking.
 
 ### 💳 Payment Management
+
 - Razorpay payment gateway integration.
 - Server-side payment verification.
 - Payment status management.
@@ -39,6 +41,7 @@ CollegeBites is designed around **two cafeteria counters**, with centralized ord
 - Receipt generation.
 
 ### 🍽️ Cafeteria & Kitchen Management
+
 - Two cafeteria counter operations.
 - Centralized order management.
 - Kitchen order coordination.
@@ -46,19 +49,26 @@ CollegeBites is designed around **two cafeteria counters**, with centralized ord
 - Token-based order pickup workflow.
 
 ### 📱 QR-Based Order Pickup
+
 - QR-based order identification.
 - QR scanning workflow for staff.
 - Order validation before handover.
 - Protection against duplicate order collection.
 
 ### 📊 Administration & Analytics
+
 - Centralized administration dashboard.
 - Order and operational monitoring.
 - Menu and item availability management.
 - Inventory and cafeteria management modules.
 - Operational reporting and analytics.
+- Revenue and sales performance monitoring.
+- Order trends and peak-hour analysis.
+- Food item performance analysis.
+- Data-driven operational insights.
 
 ### 🔐 Security & Reliability
+
 - Authentication and authorization.
 - Role-based access control.
 - Protected backend APIs.
@@ -81,11 +91,15 @@ CollegeBites follows a modular application architecture.
 | Kitchen System | Food preparation and order coordination |
 | Counter System | Counter operations and order handover |
 | Administration | Centralized management and monitoring |
+| Analytics System | Operational analysis, reporting, and data insights |
 | Mobile Application | Mobile application interface and workflows |
+
+---
 
 ## 🛠️ Technology Stack
 
 ### Frontend
+
 - React.js
 - TypeScript
 - Vite
@@ -97,6 +111,7 @@ CollegeBites follows a modular application architecture.
 - Axios
 
 ### Backend
+
 - Python
 - FastAPI
 - Pydantic
@@ -104,12 +119,14 @@ CollegeBites follows a modular application architecture.
 - Alembic
 
 ### Database & Infrastructure
+
 - PostgreSQL
 - Redis
 - Celery
 - WebSockets
 
 ### Mobile Application
+
 - React Native
 - Expo
 - TypeScript
@@ -118,6 +135,7 @@ CollegeBites follows a modular application architecture.
 - Expo Camera
 
 ### Integrations & Tools
+
 - Razorpay
 - Git
 - GitHub
@@ -126,7 +144,7 @@ CollegeBites follows a modular application architecture.
 - Vitest
 - Playwright
 
-*The technology list reflects dependencies and configuration found in the supplied project repository. Actual deployed services and working integrations depend on environment configuration.*
+**Technology Stack Note:** The technology list reflects dependencies and configuration found in the supplied project repository. Actual deployed services and working integrations depend on environment configuration.
 
 ---
 
@@ -150,7 +168,8 @@ CollegeBites follows a modular application architecture.
 ## 👨‍💻 Project Team & Contributions
 
 ### 1. Purna Sai Avvaru
-**Team Lead | Complete Application Developer**
+
+**Team Lead | Full-Stack Developer | Complete Application Developer**
 
 - Led the CollegeBites project from concept to implementation.
 - Developed the complete application.
@@ -164,6 +183,7 @@ CollegeBites follows a modular application architecture.
 - Coordinated overall project development and integration.
 
 ### 2. Srikar
+
 **Deployment & Testing**
 
 - Contributed to application deployment activities.
@@ -171,15 +191,29 @@ CollegeBites follows a modular application architecture.
 - Performed application testing.
 - Helped identify bugs and functional issues.
 - Supported testing of application workflows.
+- Assisted in validating application functionality across different modules.
 
-### 3. Harishini
-**Architecture Design | System Design & Testing**
+###3. Harishini
+Data Analytics | System Design | Testing
+- Contributed to system design and application workflow planning.
+- Assisted in designing and reviewing the overall system structure.
+- Contributed to data analytics and reporting activities.
+- Analyzed cafeteria operational data to identify meaningful patterns and trends.
+- Supported analytical insights for cafeteria operations.
+- Participated in application testing and functional validation.
+- Helped identify bugs, inconsistencies, and areas for improvement.
+- Supported improvements in system functionality, reliability, and performance.
 
-- Contributed to application architecture design.
-- Worked on system design and structural planning.
-- Assisted in reviewing application workflows.
-- Participated in application testing.
-- Helped identify system-level improvements.
+### 4. Shushath
+
+**Data Analytics & Testing**
+
+- Contributed to data analytics and reporting activities.
+- Assisted with analyzing order and transaction data.
+- Participated in testing application functionality.
+- Identified bugs and helped validate application workflows.
+- Assisted in verifying analytical results and dashboard functionality.
+- Supported overall application quality and reliability.
 
 ---
 
@@ -191,11 +225,15 @@ CollegeBites aims to create a centralized cafeteria ecosystem that makes food or
 
 The long-term goal is to develop a scalable solution that can support the evolving requirements of modern educational institutions.
 
+---
+
 ## 📌 Project Status
 
 **Status: Active Development**
 
 CollegeBites is undergoing continuous development, testing, and improvement. Features and workflows are refined based on application requirements and testing results.
+
+---
 
 ## 🤝 Contributions
 
@@ -209,14 +247,14 @@ To contribute:
 4. Test your changes.
 5. Submit a pull request with a clear description.
 
+---
+
 ## 📄 License
 
 A license should be added to the repository before external redistribution or reuse.
 
 ---
 
-<p align="center">
-  <strong>Built with dedication by Team CollegeBites ❤️</strong>
-  <br/>
-  <strong>Team Lead & Developer: Purna Sai Avvaru</strong>
-</p>
+**Built with dedication by Team CollegeBites ❤️**
+
+**Team Lead & Developer: Purna Sai Avvaru**
