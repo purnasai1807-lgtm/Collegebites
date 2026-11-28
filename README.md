@@ -193,7 +193,7 @@ CollegeBites follows a modular application architecture.
 - Supported testing of application workflows.
 - Assisted in validating application functionality across different modules.
 
-###3. Harishini
+### 3. Harishini
 Data Analytics | System Design | Testing
 - Contributed to system design and application workflow planning.
 - Assisted in designing and reviewing the overall system structure.
