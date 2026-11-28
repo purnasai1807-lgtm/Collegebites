@@ -194,10 +194,16 @@ def test_enterprise_bi_all_seven_sections_filters_drilldowns_and_cache_invalidat
     assert bi["operations"]["completion_rate_percent"] == 100.0
     assert "avg_fulfilment_minutes" in bi["operations"]
 
-    # Section 4: Product Intelligence & Frequently Purchased Combinations
+    # Section 4: Product Intelligence, All Products Sales & Frequently Purchased Combinations
     top_names = [it["item_name"] for it in bi["sales"]["top_items"]]
     assert biryani["name"] in top_names
     assert coffee["name"] in top_names
+    all_prods = bi["sales"]["all_products_performance"]
+    assert len(all_prods) >= len(menu)
+    assert bi["sales"]["highest_selling_item"]["item_name"] == biryani["name"]
+    assert bi["sales"]["highest_revenue_item"]["item_name"] in top_names
+    assert bi["sales"]["lowest_selling_sold_item"]["item_name"] == coffee["name"]
+    assert bi["sales"]["zero_sales_count"] >= 1
     assert len(bi["sales"]["product_demand_trends"]) >= 1
     assert len(bi["sales"]["product_demand_trend_keys"]) >= 1
     combos = bi["sales"]["frequent_combinations"]

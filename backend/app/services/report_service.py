@@ -515,22 +515,69 @@ def get_analytics_report(
     if food_item_id:
         food_stmt = food_stmt.where(FoodItem.id == food_item_id)
     active_foods = db.execute(food_stmt.order_by(FoodItem.name.asc())).all()
+    net_sales_float = float(net_sales or 0)
     all_food_perf = []
+    seen_food_ids: set[UUID] = set()
     for fi, cat_name in active_foods:
+        seen_food_ids.add(fi.id)
         q_sold, rev_amt, o_cnt = sold_by_food_id.get(fi.id, (0, 0.0, 0))
         all_food_perf.append({
             "food_item_id": str(fi.id),
             "item_name": fi.name,
             "category_name": cat_name,
+            "unit_price": float(fi.base_price or 0),
             "quantity_sold": q_sold,
             "order_count": o_cnt,
+            "avg_qty_per_order": round(q_sold / o_cnt, 2) if o_cnt > 0 else 0.0,
             "revenue": rev_amt,
+            "revenue_share_percent": round((rev_amt / net_sales_float) * 100.0, 2) if net_sales_float > 0 else 0.0,
             "is_available": fi.is_available,
+            "is_active": True,
+            "estimated_profit": None,
+            "estimated_margin_percent": None,
+            "profitability_available": False,
         })
+    # Include any historically sold/archived dish present in OrderItem rows if not in active_foods
+    extra_sold_meta: dict[UUID, tuple[str, str]] = {}
+    for _oid_val, _o_ts, f_id_row, i_name_row, _iq, _lt, f_cat_row, c_name_row in oi_all_rows:
+        if f_id_row and f_id_row not in seen_food_ids:
+            if food_item_id and f_id_row != food_item_id:
+                continue
+            if category_id and f_cat_row != category_id:
+                continue
+            extra_sold_meta[f_id_row] = (i_name_row or "Archived Item", c_name_row or "Archived")
+    for fid_extra, (iname_extra, cname_extra) in extra_sold_meta.items():
+        q_sold, rev_amt, o_cnt = sold_by_food_id.get(fid_extra, (0, 0.0, 0))
+        all_food_perf.append({
+            "food_item_id": str(fid_extra),
+            "item_name": iname_extra,
+            "category_name": cname_extra,
+            "unit_price": round(rev_amt / q_sold, 2) if q_sold > 0 else 0.0,
+            "quantity_sold": q_sold,
+            "order_count": o_cnt,
+            "avg_qty_per_order": round(q_sold / o_cnt, 2) if o_cnt > 0 else 0.0,
+            "revenue": rev_amt,
+            "revenue_share_percent": round((rev_amt / net_sales_float) * 100.0, 2) if net_sales_float > 0 else 0.0,
+            "is_available": False,
+            "is_active": False,
+            "estimated_profit": None,
+            "estimated_margin_percent": None,
+            "profitability_available": False,
+        })
+
+    all_products_performance = sorted(
+        all_food_perf,
+        key=lambda x: (-x["quantity_sold"], -x["revenue"], x["item_name"]),
+    )
     least_ordered_items = sorted(
         all_food_perf,
         key=lambda x: (x["quantity_sold"], x["revenue"], x["item_name"]),
     )[:15]
+    sold_only_perf = [x for x in all_products_performance if x["quantity_sold"] > 0]
+    highest_selling_item = sold_only_perf[0] if sold_only_perf else None
+    highest_revenue_item = max(sold_only_perf, key=lambda x: (x["revenue"], x["quantity_sold"])) if sold_only_perf else None
+    lowest_selling_sold_item = min(sold_only_perf, key=lambda x: (x["quantity_sold"], x["revenue"], x["item_name"])) if sold_only_perf else None
+    zero_sales_count = sum(1 for x in all_products_performance if x["quantity_sold"] == 0)
 
     # Out-of-stock / unavailable products + Product demand trends (top 5) + Market-basket co-occurrence
     out_of_stock_items = [
@@ -1006,8 +1053,8 @@ def get_analytics_report(
         ti["estimated_profit"] = None
         ti["estimated_margin_percent"] = None
         ti["profitability_available"] = False
-    top_fids = [UUID(t["food_item_id"]) for t in top_items if t.get("food_item_id")]
-    if top_fids and ing_unit_cost_map:
+    all_perf_fids = [UUID(p["food_item_id"]) for p in all_products_performance if p.get("food_item_id")]
+    if all_perf_fids and ing_unit_cost_map:
         rec_rows = db.execute(
             select(
                 Recipe.food_item_id,
@@ -1016,7 +1063,7 @@ def get_analytics_report(
                 RecipeIngredient.quantity_required,
             )
             .join(RecipeIngredient, RecipeIngredient.recipe_id == Recipe.id)
-            .where(Recipe.food_item_id.in_(top_fids))
+            .where(Recipe.food_item_id.in_(all_perf_fids))
         ).all()
         cost_per_portion: dict[UUID, Decimal] = {}
         missing_cost_fids: set[UUID] = set()
@@ -1028,21 +1075,21 @@ def get_analytics_report(
             yp = max(1, int(r_yield or 1))
             portion_c = (Decimal(str(r_qty or 0)) * uc_ing) / Decimal(yp)
             cost_per_portion[r_fid] = cost_per_portion.get(r_fid, Decimal("0.00")) + portion_c
-        for ti in top_items:
-            fid_str = ti.get("food_item_id")
+        for entry in (*top_items, *all_products_performance):
+            fid_str = entry.get("food_item_id")
             if not fid_str:
                 continue
             fid_u = UUID(fid_str)
             if fid_u in missing_cost_fids or fid_u not in cost_per_portion:
                 continue
-            item_direct_cost = (cost_per_portion[fid_u] * Decimal(ti["quantity_sold"])).quantize(Decimal("0.01"))
-            item_rev_dec = Decimal(str(ti["revenue"]))
+            item_direct_cost = (cost_per_portion[fid_u] * Decimal(entry["quantity_sold"])).quantize(Decimal("0.01"))
+            item_rev_dec = Decimal(str(entry["revenue"]))
             item_profit = (item_rev_dec - item_direct_cost).quantize(Decimal("0.01"))
-            ti["estimated_profit"] = float(item_profit)
-            ti["estimated_margin_percent"] = (
+            entry["estimated_profit"] = float(item_profit)
+            entry["estimated_margin_percent"] = (
                 round(float((item_profit / item_rev_dec) * Decimal("100")), 1) if item_rev_dec > Decimal("0.00") else None
             )
-            ti["profitability_available"] = True
+            entry["profitability_available"] = True
 
     period_comparison = None
     prev_end = s_date - timedelta(days=1)
@@ -1427,6 +1474,11 @@ def get_analytics_report(
             "hourly_heatmap": hourly_heatmap,
             "top_items": top_items,
             "least_ordered_items": least_ordered_items,
+            "all_products_performance": all_products_performance,
+            "highest_selling_item": highest_selling_item,
+            "highest_revenue_item": highest_revenue_item,
+            "lowest_selling_sold_item": lowest_selling_sold_item,
+            "zero_sales_count": zero_sales_count,
             "out_of_stock_items": out_of_stock_items,
             "product_demand_trends": product_demand_trends,
             "product_demand_trend_keys": top_5_names,

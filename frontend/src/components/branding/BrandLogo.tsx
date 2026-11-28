@@ -1,6 +1,5 @@
 import React from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useAppStore } from "../../store/useAppStore";
 import { cn } from "../ui/Primitives";
 
 /** Official Main Branding Logo (LOGO 1) — used everywhere inside CollegeBites. */
@@ -84,11 +83,7 @@ const FOOTER_HIDDEN_PREFIXES = ["/board", "/display", "/tv", "/kiosk"];
 
 export const BrandFooter: React.FC = () => {
   const { pathname } = useLocation();
-  const user = useAppStore((s) => s.user);
-  const isAuthorizedAdminRoute =
-    pathname.startsWith("/admin") &&
-    Boolean(user?.roles?.some((r) => ["super_admin", "college_admin", "canteen_manager"].includes(r)));
-  if (FOOTER_HIDDEN_PREFIXES.some((p) => pathname.startsWith(p)) || isAuthorizedAdminRoute) {
+  if (FOOTER_HIDDEN_PREFIXES.some((p) => pathname.startsWith(p))) {
     return null;
   }
 

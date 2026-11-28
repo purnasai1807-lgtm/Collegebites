@@ -125,6 +125,13 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
     }, [biTheme]);
 
     const [chartPeriod, setChartPeriod] = useState<"daily" | "weekly" | "monthly" | "hourly">("daily");
+    const [productChartMode, setProductChartMode] = useState<"highest" | "lowest" | "all">("highest");
+    const [productSearch, setProductSearch] = useState("");
+    const [productSort, setProductSort] = useState<
+      "qty_desc" | "qty_asc" | "rev_desc" | "rev_asc" | "orders_desc" | "price_desc" | "name_asc"
+    >("qty_desc");
+    const [productFilter, setProductFilter] = useState<"all" | "sold" | "zero" | "unavailable">("all");
+    const [showAllSlow, setShowAllSlow] = useState(false);
     const [showDefinitions, setShowDefinitions] = useState(false);
     const [detailTab, setDetailTab] = useState<"orders" | "items" | "inventory">("orders");
     const [detailSearch, setDetailSearch] = useState("");
@@ -179,6 +186,7 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
       { key: "last_7_days", label: "Last 7 Days" },
       { key: "last_30_days", label: "Last 30 Days" },
       { key: "this_month", label: "This Month" },
+      { key: "previous_month", label: "Prev Month" },
       { key: "custom", label: "Custom" },
     ];
 
@@ -213,10 +221,99 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
       heatmapLookup.set(`${c.weekday_index}:${c.hour}`, c);
     }
 
-    const topProductBarData = (report.sales?.top_items || []).slice(0, 8).map((t: any) => ({
+    const allProductsPerf: any[] =
+      report.sales?.all_products_performance ||
+      report.sales?.top_items ||
+      [];
+    const highestSelling = report.sales?.highest_selling_item || null;
+    const highestRevenue = report.sales?.highest_revenue_item || null;
+    const lowestSellingSold = report.sales?.lowest_selling_sold_item || null;
+    const zeroSalesCount: number =
+      report.sales?.zero_sales_count ??
+      allProductsPerf.filter((p) => Number(p.quantity_sold || 0) === 0).length;
+
+    const productChartSource =
+      productChartMode === "lowest"
+        ? [...allProductsPerf]
+            .sort((a, b) => a.quantity_sold - b.quantity_sold || a.revenue - b.revenue || a.item_name.localeCompare(b.item_name))
+            .slice(0, 15)
+        : productChartMode === "all"
+        ? allProductsPerf
+        : allProductsPerf.slice(0, 15);
+
+    const topProductBarData = productChartSource.map((t: any) => ({
       ...t,
-      short_name: t.item_name.length > 16 ? `${t.item_name.slice(0, 15)}…` : t.item_name,
+      short_name: t.item_name.length > 18 ? `${t.item_name.slice(0, 17)}…` : t.item_name,
     }));
+
+    const filteredAllProducts = allProductsPerf
+      .filter((p) => {
+        if (productFilter === "sold" && Number(p.quantity_sold || 0) <= 0) return false;
+        if (productFilter === "zero" && Number(p.quantity_sold || 0) > 0) return false;
+        if (productFilter === "unavailable" && p.is_available !== false) return false;
+        const q = productSearch.trim().toLowerCase();
+        if (q) {
+          return (
+            String(p.item_name || "").toLowerCase().includes(q) ||
+            String(p.category_name || "").toLowerCase().includes(q)
+          );
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        switch (productSort) {
+          case "qty_asc":
+            return a.quantity_sold - b.quantity_sold || a.revenue - b.revenue || a.item_name.localeCompare(b.item_name);
+          case "rev_desc":
+            return b.revenue - a.revenue || b.quantity_sold - a.quantity_sold;
+          case "rev_asc":
+            return a.revenue - b.revenue || a.quantity_sold - b.quantity_sold;
+          case "orders_desc":
+            return (b.order_count || 0) - (a.order_count || 0) || b.quantity_sold - a.quantity_sold;
+          case "price_desc":
+            return (b.unit_price || 0) - (a.unit_price || 0);
+          case "name_asc":
+            return String(a.item_name || "").localeCompare(String(b.item_name || ""));
+          case "qty_desc":
+          default:
+            return b.quantity_sold - a.quantity_sold || b.revenue - a.revenue;
+        }
+      });
+
+    const exportAllProductsCsv = () => {
+      const headers = [
+        "Product Name",
+        "Category",
+        "Unit Price (INR)",
+        "Orders",
+        "Qty Sold",
+        "Avg Qty/Order",
+        "Revenue (INR)",
+        "Revenue Share (%)",
+        "Availability",
+        "Estimated Profit (INR)",
+      ];
+      const rows = filteredAllProducts.map((p) => [
+        p.item_name,
+        p.category_name || "",
+        Number(p.unit_price || 0).toFixed(2),
+        p.order_count ?? 0,
+        p.quantity_sold ?? 0,
+        p.avg_qty_per_order ?? 0,
+        Number(p.revenue || 0).toFixed(2),
+        p.revenue_share_percent ?? 0,
+        p.is_available ? "Available" : "Unavailable",
+        p.profitability_available && p.estimated_profit !== null ? Number(p.estimated_profit).toFixed(2) : "N/A",
+      ]);
+      const csv = [headers.join(","), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "collegebites-all-products-analytics.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    };
 
     const demandKeys: string[] = report.sales?.product_demand_trend_keys || [];
     const demandSeries: any[] = report.sales?.product_demand_trends || [];
@@ -960,34 +1057,136 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
 
         {/* ==================== SECTION 4: PRODUCT INTELLIGENCE ==================== */}
         <section id="sec-products" className="space-y-3">
-          <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
-            <Sparkles className="h-4 w-4 text-[#76010d]" /> 4. Product Intelligence &amp; Basket Combinations
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className={`text-sm font-extrabold flex items-center gap-2 ${headingText}`}>
+              <Sparkles className="h-4 w-4 text-[#76010d]" /> 4. Complete Product Sales Analytics ({allProductsPerf.length} Products)
+            </h3>
+            <span className={`text-[11px] ${mutedText}`}>
+              Inspect every product&apos;s highest sales, lowest sales, zero sellers, revenue share &amp; order drill-down
+            </span>
+          </div>
+
+          {/* Highlight Strip: Highest Qty, Highest Revenue, Lowest Selling (>0), Zero-Sales */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-emerald-400 transition ${cardCls}`}
+              onClick={() => {
+                if (highestSelling?.food_item_id) {
+                  applyOrderDrilldown({ food_item_id: highestSelling.food_item_id, label: `Highest Qty: ${highestSelling.item_name}` }, "orders");
+                }
+              }}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Highest Selling (Units)</div>
+              <div className={`text-sm font-black mt-1 truncate ${headingText}`}>
+                {highestSelling ? highestSelling.item_name : "No sales yet"}
+              </div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
+                {highestSelling
+                  ? `${highestSelling.quantity_sold} sold across ${highestSelling.order_count} orders (₹${Number(highestSelling.revenue).toFixed(2)})`
+                  : "0 confirmed item sales"}
+              </div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-[#76010d]/40 transition ${cardCls}`}
+              onClick={() => {
+                if (highestRevenue?.food_item_id) {
+                  applyOrderDrilldown({ food_item_id: highestRevenue.food_item_id, label: `Highest Revenue: ${highestRevenue.item_name}` }, "orders");
+                }
+              }}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[#76010d]">Highest Revenue Product</div>
+              <div className={`text-sm font-black mt-1 truncate ${headingText}`}>
+                {highestRevenue ? highestRevenue.item_name : "No sales yet"}
+              </div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
+                {highestRevenue
+                  ? `₹${Number(highestRevenue.revenue).toFixed(2)} (${highestRevenue.revenue_share_percent ?? 0}% share · ${highestRevenue.quantity_sold} sold)`
+                  : "₹0.00 recorded"}
+              </div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-amber-400 transition ${cardCls}`}
+              onClick={() => {
+                if (lowestSellingSold?.food_item_id) {
+                  applyOrderDrilldown({ food_item_id: lowestSellingSold.food_item_id, label: `Lowest Sold (>0): ${lowestSellingSold.item_name}` }, "orders");
+                }
+              }}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Lowest Selling (With Sales)</div>
+              <div className={`text-sm font-black mt-1 truncate ${headingText}`}>
+                {lowestSellingSold ? lowestSellingSold.item_name : "No paid item sales"}
+              </div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
+                {lowestSellingSold
+                  ? `${lowestSellingSold.quantity_sold} sold · ₹${Number(lowestSellingSold.revenue).toFixed(2)} (${lowestSellingSold.order_count} orders)`
+                  : "No items with >0 sales in range"}
+              </div>
+            </Card>
+
+            <Card
+              className={`p-3.5 cursor-pointer hover:ring-2 hover:ring-red-400 transition ${cardCls}`}
+              onClick={() => {
+                setProductFilter("zero");
+                setProductSort("qty_asc");
+              }}
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wide text-red-600">Zero-Sale Active Dishes</div>
+              <div className="text-xl font-black text-red-600 mt-1">{zeroSalesCount}</div>
+              <div className={`text-[11px] mt-0.5 ${mutedText}`}>
+                Out of {allProductsPerf.length} products (click to filter table)
+              </div>
+            </Card>
+          </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            {/* Top Products BarChart */}
+            {/* Products BarChart with Highest / Lowest / All Switcher */}
             <Card className={`p-4 ${cardCls}`}>
-              <div className="flex items-center justify-between mb-3">
-                <h4 className={`font-bold text-sm ${headingText}`}>Top Products Revenue vs Qty Sold</h4>
-                <span className={`text-[10px] ${mutedText}`}>Sorted by demand</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h4 className={`font-bold text-sm ${headingText}`}>
+                  {productChartMode === "highest"
+                    ? "Highest Selling Products (Top 15)"
+                    : productChartMode === "lowest"
+                    ? "Lowest Selling Products (Bottom 15)"
+                    : `All Products Revenue vs Qty (${topProductBarData.length})`}
+                </h4>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    { k: "highest", l: "Highest" },
+                    { k: "lowest", l: "Lowest" },
+                    { k: "all", l: "All Products" },
+                  ].map((m) => (
+                    <Button
+                      key={m.k}
+                      size="sm"
+                      variant={productChartMode === m.k ? "secondary" : "outline"}
+                      onClick={() => setProductChartMode(m.k as any)}
+                    >
+                      {m.l}
+                    </Button>
+                  ))}
+                </div>
               </div>
               {topProductBarData.length === 0 ? (
                 <div className={`h-60 flex items-center justify-center text-xs ${mutedText}`}>
-                  No dish sales recorded for selected range.
+                  No products found for selected canteen/filters.
                 </div>
               ) : (
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={topProductBarData} layout="vertical" margin={{ left: 10 }}>
-                      <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
-                      <XAxis type="number" tick={axisTick} />
-                      <YAxis type="category" dataKey="short_name" width={115} tick={axisTick} />
-                      <Tooltip contentStyle={tooltipStyle} />
-                      <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar isAnimationActive={false} dataKey="revenue" name="Revenue (₹)" fill="#76010d" radius={[0, 4, 4, 0]} />
-                      <Bar isAnimationActive={false} dataKey="quantity_sold" name="Qty Sold" fill="#0f766e" radius={[0, 4, 4, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                <div className="max-h-72 overflow-y-auto pr-1">
+                  <div style={{ height: Math.max(256, topProductBarData.length * 28) }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topProductBarData} layout="vertical" margin={{ left: 10 }}>
+                        <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+                        <XAxis type="number" tick={axisTick} />
+                        <YAxis type="category" dataKey="short_name" width={125} tick={axisTick} />
+                        <Tooltip contentStyle={tooltipStyle} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Bar isAnimationActive={false} dataKey="revenue" name="Revenue (₹)" fill="#76010d" radius={[0, 4, 4, 0]} />
+                        <Bar isAnimationActive={false} dataKey="quantity_sold" name="Qty Sold" fill="#0f766e" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               )}
             </Card>
@@ -1025,6 +1224,151 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
               )}
             </Card>
           </div>
+
+          {/* Complete Every-Product Sales Analytics Table (All Highest, All Lowest & Zero Sales) */}
+          <Card className={`p-4 space-y-3 ${cardCls}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className={`font-bold text-sm ${headingText}`}>
+                  Every Product Sales Breakdown ({filteredAllProducts.length} of {allProductsPerf.length})
+                </h4>
+                <p className={`text-[11px] ${mutedText}`}>
+                  Complete analytical ledger across every product — sort by highest or lowest qty, revenue, orders, or price
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="outline" onClick={exportAllProductsCsv}>
+                  <Download className="h-3.5 w-3.5" /> Export Products CSV
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { k: "all", l: `All (${allProductsPerf.length})` },
+                  { k: "sold", l: `Sold (${allProductsPerf.length - zeroSalesCount})` },
+                  { k: "zero", l: `Zero Sales (${zeroSalesCount})` },
+                  { k: "unavailable", l: "Unavailable" },
+                ].map((f) => (
+                  <Button
+                    key={f.k}
+                    size="sm"
+                    variant={productFilter === f.k ? "secondary" : "outline"}
+                    onClick={() => setProductFilter(f.k as any)}
+                  >
+                    {f.l}
+                  </Button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={productSort}
+                  onChange={(e) => setProductSort(e.target.value as any)}
+                  aria-label="Sort all products"
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs ${
+                    isDark ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-300 text-slate-900"
+                  }`}
+                >
+                  <option value="qty_desc">Highest Sales (Qty High → Low)</option>
+                  <option value="qty_asc">Lowest Sales (Qty Low → High)</option>
+                  <option value="rev_desc">Highest Revenue (₹ High → Low)</option>
+                  <option value="rev_asc">Lowest Revenue (₹ Low → High)</option>
+                  <option value="orders_desc">Most Orders</option>
+                  <option value="price_desc">Highest Price</option>
+                  <option value="name_asc">Name (A → Z)</option>
+                </select>
+                <div className="relative">
+                  <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                  <Input
+                    value={productSearch}
+                    onChange={(e) => setProductSearch(e.target.value)}
+                    placeholder="Filter any product..."
+                    className="pl-8 w-48"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto max-h-96 overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 z-10">
+                  <tr className={`border-b text-[11px] uppercase ${isDark ? "bg-slate-900 border-slate-800 text-slate-400" : "bg-slate-50 border-slate-200 text-slate-500"}`}>
+                    <th className="py-2 px-2">#</th>
+                    <th className="py-2 pr-3">Product</th>
+                    <th className="py-2 pr-3">Category</th>
+                    <th className="py-2 pr-3 text-right">Price</th>
+                    <th className="py-2 pr-3 text-right">Orders</th>
+                    <th className="py-2 pr-3 text-right">Qty Sold</th>
+                    <th className="py-2 pr-3 text-right">Avg/Order</th>
+                    <th className="py-2 pr-3 text-right">Revenue</th>
+                    <th className="py-2 pr-3">Share %</th>
+                    <th className="py-2 pr-3 text-right">Est. Profit</th>
+                    <th className="py-2 pr-3">Status</th>
+                    <th className="py-2 text-right">Orders</th>
+                  </tr>
+                </thead>
+                <tbody className={`divide-y ${isDark ? "divide-slate-800" : "divide-slate-100"}`}>
+                  {filteredAllProducts.map((p: any, idx: number) => (
+                    <tr key={p.food_item_id || `${p.item_name}-${idx}`} className={isDark ? "hover:bg-slate-800/40" : "hover:bg-slate-50"}>
+                      <td className={`py-2 px-2 font-mono text-[10px] ${mutedText}`}>{idx + 1}</td>
+                      <td className={`py-2 pr-3 font-bold ${headingText}`}>{p.item_name}</td>
+                      <td className={`py-2 pr-3 ${mutedText}`}>{p.category_name}</td>
+                      <td className="py-2 pr-3 text-right">₹{Number(p.unit_price || 0).toFixed(2)}</td>
+                      <td className="py-2 pr-3 text-right">{p.order_count ?? 0}</td>
+                      <td className="py-2 pr-3 text-right font-extrabold">{p.quantity_sold ?? 0}</td>
+                      <td className={`py-2 pr-3 text-right ${mutedText}`}>{p.avg_qty_per_order ?? 0}</td>
+                      <td className="py-2 pr-3 text-right font-extrabold text-[#76010d]">₹{Number(p.revenue || 0).toFixed(2)}</td>
+                      <td className="py-2 pr-3 min-w-[95px]">
+                        <div className="flex items-center gap-1.5">
+                          <div className={`h-1.5 flex-1 rounded-full overflow-hidden ${isDark ? "bg-slate-800" : "bg-slate-200"}`}>
+                            <div
+                              className="h-full bg-[#76010d] rounded-full"
+                              style={{ width: `${Math.min(100, Number(p.revenue_share_percent || 0))}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-semibold w-9 text-right">{p.revenue_share_percent ?? 0}%</span>
+                        </div>
+                      </td>
+                      <td className={`py-2 pr-3 text-right text-[11px] ${mutedText}`}>
+                        {p.profitability_available && p.estimated_profit !== null
+                          ? `₹${Number(p.estimated_profit).toFixed(2)} (${p.estimated_margin_percent}%)`
+                          : "N/A"}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Badge tone={p.is_available ? "green" : p.is_active === false ? "slate" : "amber"}>
+                          {p.is_available ? "Available" : p.is_active === false ? "Archived" : "Unavailable"}
+                        </Badge>
+                      </td>
+                      <td className="py-2 text-right">
+                        {p.food_item_id && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              applyOrderDrilldown(
+                                { food_item_id: p.food_item_id, label: `Product: ${p.item_name}` },
+                                "orders"
+                              )
+                            }
+                            className="text-[11px] font-bold text-[#76010d] hover:underline"
+                          >
+                            Inspect →
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredAllProducts.length === 0 && (
+                    <tr>
+                      <td colSpan={12} className={`py-8 text-center text-xs ${mutedText}`}>
+                        No products match the selected filter/search.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
 
           <div className="grid gap-4 lg:grid-cols-3">
             {/* Category Donut */}
@@ -1083,23 +1427,37 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
               )}
             </Card>
 
-            {/* Low Performing / Slow-Moving Menu Items */}
+            {/* All Lowest-Selling / Slow Menu Items */}
             <Card className={`p-4 space-y-2 text-xs ${cardCls}`}>
               <div className="flex items-center justify-between">
-                <h4 className={`font-bold text-sm ${headingText}`}>Least-Selling / Slow Items</h4>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setItemSortDir("asc");
-                    applyOrderDrilldown({}, "items");
-                  }}
-                  className="text-[11px] font-bold text-[#76010d] hover:underline"
-                >
-                  View All →
-                </button>
+                <h4 className={`font-bold text-sm ${headingText}`}>All Lowest-Selling / Slow Items ({allProductsPerf.length})</h4>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSlow((v) => !v)}
+                    className="text-[11px] font-bold text-[#76010d] hover:underline"
+                  >
+                    {showAllSlow ? "Collapse" : "Show All"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setItemSortDir("asc");
+                      applyOrderDrilldown({}, "items");
+                    }}
+                    className="text-[11px] font-bold text-[#76010d] hover:underline"
+                  >
+                    Paginated →
+                  </button>
+                </div>
               </div>
-              <div className="space-y-1.5 pt-1">
-                {(report.sales?.least_ordered_items || []).slice(0, 6).map((li: any) => (
+              <div className={`space-y-1.5 pt-1 ${showAllSlow ? "max-h-64 overflow-y-auto pr-1" : ""}`}>
+                {(showAllSlow
+                  ? [...allProductsPerf].sort(
+                      (a, b) => a.quantity_sold - b.quantity_sold || a.revenue - b.revenue || a.item_name.localeCompare(b.item_name)
+                    )
+                  : report.sales?.least_ordered_items || []
+                ).map((li: any) => (
                   <div
                     key={li.food_item_id}
                     onClick={() =>
@@ -1116,7 +1474,9 @@ export const BiAnalyticsPanel: React.FC<BiAnalyticsPanelProps> = memo(
                       <span className={`font-bold ${headingText}`}>{li.item_name}</span>
                       <span className={`ml-1.5 text-[10px] ${mutedText}`}>{li.category_name}</span>
                     </div>
-                    <Badge tone={li.quantity_sold === 0 ? "amber" : "slate"}>{li.quantity_sold} sold</Badge>
+                    <Badge tone={li.quantity_sold === 0 ? "amber" : "slate"}>
+                      {li.quantity_sold} sold • ₹{Number(li.revenue || 0).toFixed(0)}
+                    </Badge>
                   </div>
                 ))}
               </div>

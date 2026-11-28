@@ -13,7 +13,6 @@ interface OrdersUsersTabProps {
   syncStatus?: React.ComponentProps<typeof RealtimeStatusBadge>["status"];
   lastSyncedAt?: Date | null;
   triggerSync?: () => void;
-  sectionMode?: "all" | "orders" | "users";
 }
 
 export const OrdersUsersTab: React.FC<OrdersUsersTabProps> = ({
@@ -21,7 +20,6 @@ export const OrdersUsersTab: React.FC<OrdersUsersTabProps> = ({
   syncStatus = "live",
   lastSyncedAt = null,
   triggerSync,
-  sectionMode = "all",
 }) => {
   const { pushToast } = useToast();
   const qc = useQueryClient();
@@ -100,7 +98,6 @@ export const OrdersUsersTab: React.FC<OrdersUsersTabProps> = ({
 
   return (
     <div className="space-y-6">
-      {(sectionMode === "all" || sectionMode === "orders") && (
       <Card className="p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5">
@@ -214,9 +211,7 @@ export const OrdersUsersTab: React.FC<OrdersUsersTabProps> = ({
           ))}
         </div>
       </Card>
-      )}
 
-      {(sectionMode === "all" || sectionMode === "users") && (
       <Card className="p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-bold text-slate-900 flex items-center gap-2">
@@ -316,7 +311,6 @@ export const OrdersUsersTab: React.FC<OrdersUsersTabProps> = ({
           })}
         </div>
       </Card>
-      )}
 
       <Modal
         open={Boolean(permModalUser)}
